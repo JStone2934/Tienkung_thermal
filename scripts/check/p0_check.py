@@ -300,7 +300,7 @@ def run_on_robot(
             CheckResult(
                 check_id="p0.manual.temperature_physical",
                 status=PENDING,
-                summary="温度 °C / 滤波：需驱动器或外测温对照（本脚本仅看接口类型）",
+                summary="工程基线已约定 temperature 为 float32、°C（见 plan.md §0、TienKung_ROS MotorStatus.msg）；实机可再对照驱动器显示或外测温",
                 details=[],
             )
         )

@@ -23,14 +23,14 @@ tienkung-thermal @ file:///absolute/path/to/tienkung_thermal
 | 字段 | 说明 |
 |------|------|
 | `timestamp` | 单调时间戳（秒，仿真或 ROS `header.stamp` 转秒） |
-| `T_leg` | 形状 `(n_leg_motors,)` 的腿部温度向量；顺序见 `configs/leg_index_mapping.yaml` |
+| `T_leg` | 形状 `(n_leg_motors,)` 的腿部温度向量，**单位 °C**；顺序见 `configs/leg_index_mapping.yaml` |
 | （可选）`q_leg`, `qdot_leg`, `tau_leg` | 与 Lab/Deploy 腿索引对齐后可一并存表，供监督或多任务 |
 
 导出推荐：**Parquet** 或 **NPZ**（训练）；原始 **rosbag2** 由 `scripts/extract_from_rosbag.py` 解析。
 
 ## ROS 2 Topic 约定（Deploy_Tienkung）
 
-与部署栈对齐时，腿部状态来自 `bodyctrl_msgs/msg/MotorStatusMsg`（见 Deploy `rl_control_new` 订阅 `/leg/status`）。单轴状态中的温度字段在消息内为 `temperature`（具体类型以 `bodyctrl_msgs` 包内 `.msg` 为准）。
+与部署栈对齐时，腿部状态来自 `bodyctrl_msgs/msg/MotorStatusMsg`（见 Deploy `rl_control_new` 订阅 `/leg/status`）。单轴 `MotorStatus` 中温度字段为 **`float32 temperature`**，**单位摄氏度 (°C)**；权威定义见 **`TienKung_ROS`** 仓库 `src/bodyctrl_msgs/msg/MotorStatus.msg`（与 `plan.md` §0 一致）。
 
 记录 rosbag 时请固定：
 

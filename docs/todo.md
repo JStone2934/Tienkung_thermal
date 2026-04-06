@@ -4,7 +4,7 @@
 
 本文件列出：**在把采集、训练、在线推理写进代码之前**，必须通过实机、`ros2 interface show`、Deploy 源码或日志**核实**的参数与接口。
 
-- **原则**：与 `plan.md` §0–§1.5、`task_memory.md` §3 一致——两仓库未写明的字段不得默认存在；`bodyctrl_msgs` 的 `.msg` 不在仓库内时，必须以实机接口定义为准。
+- **原则**：与 `plan.md` §0–§1.5、`task_memory.md` §3 一致——两仓库未写明的字段不得默认存在。电机温度 **`MotorStatus.temperature`** 的类型与 **°C** 单位已在 **`TienKung_ROS`** `MotorStatus.msg` 与 `plan.md` §0 **确定**；实机仍以 bag / `interface show` 做一致性抽查。
 - **用法**：自上而下按 **P0 → P1 → P2** 勾选；P0 未完成前，不建议大规模录数或锁死 HDF5 schema。
 - **记录建议**：每勾一项，在团队 wiki 或 PR 里补一行「结论 + 证据」（接口输出截图、bag 统计、`interface show` 粘贴）。
 
@@ -38,7 +38,7 @@ P0 解决三件事：**（1）消息里到底有什么字段、什么类型**；
 | 每条 `status` 读哪些字段 | 对 `msg->status` 遍历；使用 `one.pos`、`one.speed`、`one.current`、`one.temperature`；`one.name` 传入 `idMap.getIndexById(one.name)` 得到 `index` | 同上，`LegMotorStatusMsg` 回调循环 |
 | `name` / 中间向量下标 | `getIndexById` 与 CAN id 表对应；腿部 `index` 0–11 与 `l_hip_roll`…`r_ankle_roll` 固定顺序见映射表初始化 | `rl_control_new/src/plugins/rl_control_new/include/bodyIdMap.h`（`legIds` / `legNames`） |
 | \(\tau_{est}\) 与 `ct_scale` 对齐 | `tau_fed_midVec(index) = one.current * ct_scale_midVec(index)`；腿部标定：`ct_scale_midVec.head(12) << ct_scale.head(12)`，与腿 `index` 同一下标 | `RLControlNewPlugin.cpp`（`onInit` 与状态回调） |
-| `temperature` 在插件侧形态 | 写入 `temperature_midVec(index) = one.temperature`，与 `pos/speed/tau` 同一 `index`（**C++ 侧按标量赋值**；**IDL 是否数组仍以 `bodyctrl_msgs` 为准**） | 同上 |
+| `temperature` 在插件侧形态 | 写入 `temperature_midVec(index) = one.temperature`，与 `pos/speed/tau` 同一 `index`；IDL：**`float32` 标量**，**°C**（**TienKung_ROS** `MotorStatus.msg` + `plan.md` §0） | 同上 + **TienKung_ROS** |
 | `dt` 含义（配置层） | `tg22_config.yaml` 中 `dt`；`LoadConfig` 读入 `dt`、`ct_scale`；控制循环里用 `dt` 做周期（与 `/leg/status` 发布频率是否一致**无法**在仓库内证明） | `rl_control_new/config/tg22_config.yaml`、`RLControlNewPlugin.cpp`（`LoadConfig`、`rlControl` 内定时） |
 | `ct_scale` 与 `motor_num` | 配置中声明 `motor_num`；`ct_scale` 为 YAML 数组；**当前仓库中 `ct_scale` 元素个数与 `motor_num` 可能不一致**（需与机载一致配置核对） | `tg22_config.yaml` |
 
@@ -49,11 +49,39 @@ P0 解决三件事：**（1）消息里到底有什么字段、什么类型**；
 | 训练用 `T_leg` 槽位顺序（**唯一准则**） | **以 Ultra 为准**：左腿 / 右腿各 6 关节 `hip_roll` → `hip_yaw` → `hip_pitch` → `knee_pitch` → `ankle_pitch` → `ankle_roll`。Deploy 腿中间向量髋序为 R–P–Y，**不得**与 `T_leg[i]` 按下标混用；须按关节语义映射到 Ultra 第 `i` 槽位 | `legged_lab/envs/ultra/ultra_env.py`（`left_leg_ids` / `right_leg_ids` 的 `find_joints` `name_keys` 顺序）；`configs/leg_index_mapping.yaml` 与之对齐 |
 | 与 USD/MJCF 关节名 | 上述 `*_joint` 名称与 Ultra 资产一致（用于和 `leg_index_mapping.yaml` 对齐） | 同上 |
 
-**两仓库仍无法静态回答（须实机或 `bodyctrl_msgs` 包内 `.msg`）**
+**已可由 TienKung_ROS + plan 静态回答的部分**
 
-- `MotorStatusMsg` **完整** IDL：`status` 定长或变长、`temperature`/`current` 的 ROS 类型、是否另有字段。
-- **物理单位与符号**：电流安培/毫安、温度 °C、与力矩符号约定。
-- **`/leg/status` 实际频率**、stamp 抖动、与 `dt` 是否一致：须 bag 或 `scripts/check/p0_check.py` 在实机运行。
+- `MotorStatus` 单条：`MotorStatus.msg`（**TienKung_ROS**）— `float32 temperature`，**无 `#` 注释写单位时仍以工程约定 °C 执行**（见 `plan.md` §0）。
+- **温度单位**：**已约定为 °C**（见 `plan.md` §0、`MotorDevice.cpp` 解码）。
+
+**仍须实机或 bag 核对**
+
+- **`/leg/status` 实际频率**、stamp 抖动、与 `dt` 是否一致：须 bag 或 `scripts/check/p0_check.py` 在实机运行（**TienKung_ROS 不包含固定发布周期**）。
+- **`current` 符号与力矩方向**：IDL 仅声明 **A**；正电流与关节正方向的约定需小运动对照。
+- **Deploy 栈与 TienKung_ROS 是否同版 `bodyctrl_msgs`**：若实机来自不同分支，以实机 `interface show` 为准。
+
+---
+
+### 由 `TienKung_ROS` 仓库可静态回答的补充项（归档 IDL + 部分实现）
+
+以下路径均相对 **`TienKung_ROS`** 仓库根目录；用于勾掉或收窄 `todo` 里「IDL 未知」类问题。**若实机固件/消息包与仓库分叉，仍以实机为准。**
+
+| 原 todo 疑问 | 在 TienKung_ROS 中的结论 | 证据 |
+|:-------------|:-------------------------|:-----|
+| `MotorStatusMsg` 聚合结构 | `std_msgs/Header header` + **`MotorStatus[] status`** → **`status` 为变长序列**（非固定长度数组） | `src/bodyctrl_msgs/msg/MotorStatusMsg.msg` |
+| 每条 `status` 是否带独立时间戳 | **否**；仅整条消息有 **`Header`**，元素无独立 stamp | 同上 |
+| `MotorStatus` 除文档列外是否还有字段 | **否**（当前 IDL 仅 5 个成员） | `src/bodyctrl_msgs/msg/MotorStatus.msg`：`name`, `pos`, `speed`, `current`, `temperature` |
+| `one.name` / `name` 类型与语义 | **`uint16 name # MotorName`**，为 **`MotorName.msg` 中枚举常量**（如 `MOTOR_LEG_LEFT_1`…），**不是**字符串 | `MotorStatus.msg` + `MotorName.msg` |
+| `current` 单位（安培/毫安） | **`float32 current # A`** → **安培 (A)** | `MotorStatus.msg`；`MotorDevice.cpp` 中 `uint_to_float` 与 `CUR_MIN_*`/`CUR_MAX_*`（安培量级）一致 |
+| `pos` / `speed` 单位 | **`pos`：`# rad`**；**`speed` 行注释写 `# rad`（疑似笔误，物理上应为 rad/s）** | `MotorStatus.msg`；与 `MotorDevice::OnStatus` 中 `speed = uint_to_float(spd_int, SPD_MIN, SPD_MAX, …)` 的角速度解码一致 |
+| `temperature` | **`float32`**，单字段；**°C 工程约定**见 `plan.md` §0、`MotorDevice.cpp` 解码 | `MotorStatus.msg`、`MotorDevice.cpp` |
+| `Imu` 中 `euler` 单位（与 P1 相关） | **`bodyctrl_msgs/Euler`**：`roll`/`pitch`/`yaw` 为 **`float64`**；Xsens 插件中 **`/180*pi` → 发布为弧度**（该路径见 `XSensImuPlugin.cpp`，若 Deploy 用另一 IMU 插件需单独核对） | `Imu.msg`、`Euler.msg`、`body_control/.../XSensImuPlugin.cpp` |
+| 消息是否只含腿 | **IDL 不区分身体部位**；`status` 长度 = 当帧聚合进来的电机数。**腿 12 路须按 `name`∈{`MOTOR_LEG_*`} 过滤**，不能假定「前 12 条即腿」 | `MotorName.msg` 枚举 + 变长 `status[]` |
+
+**TienKung_ROS 仍无法仅由仓库回答的**
+
+- 与 **Deploy_Tienkung** 当前编译的 `bodyctrl_msgs` 是否**字节级一致**（需 `ros2 interface show` 或对比 commit）。
+- **`/leg/status` 话题名**在 TienKung_ROS 的 `BodyControlPlugin` 里可见 `motor_state` 等（ROS1 风格）；**ROS2 + `/leg/status`** 以你方 **Deploy** 配置为准，本仓库不替代实机图。
 
 ### P0 核对脚本（`scripts/check/p0_check.py`）
 
@@ -94,28 +122,25 @@ python scripts/check/p0_check.py --json
 
 ### P0 TODO List
 
-- [ ] **拿到 `MotorStatusMsg` 的权威定义并归档**
-  - **为何重要**：插件按成员名读 `pos/speed/current/temperature/name`；若类型是数组、整型、或单位与假设不符，预处理会静默错。
-  - **待确定**：
-    - [ ] `status` 是固定长度数组还是变长序列
-    - [ ] 每条 `status` 元素是否带独立时间戳或仅依赖消息 `header`
-    - [ ] 除已文档化的字段外是否还有电流环/错误码等字段可后续纳入白名单
-  - **建议**：在实机环境执行 `ros2 interface show bodyctrl_msgs/msg/MotorStatusMsg`（或包内实际类型名），把完整定义粘贴到仓库 issue / 设计笔记。
+- [x] **拿到 `MotorStatusMsg` 的权威定义并归档**（**以 TienKung_ROS 为权威 IDL**）
+  - **结论**：见 **`TienKung_ROS/src/bodyctrl_msgs/msg/MotorStatusMsg.msg`**、**`MotorStatus.msg`**。
+  - **已确定**：
+    - [x] `status` 为 **`MotorStatus[]`** → **变长序列**（非固定长度）。
+    - [x] 每条元素 **无** 独立时间戳；**仅**整条消息的 **`Header`**。
+    - [x] `MotorStatus` **仅** 五字段；**无** 错误码等扩展成员（若固件后续加字段需改 `.msg` 并再版）。
+  - **仍建议**：实机 `ros2 interface show` 与仓库 IDL **diff**，确认无分叉。
 
-- [ ] **确认 `one.temperature` 的形态、单位与语义**
-  - **为何重要**：热 LSTM 的监督就是温度；若为双通道却按标量读，或单位不是 °C，MAE 与阈值无意义。
-  - **待确定**：
-    - [ ] 单标量（基线假设）
-    - [ ] 多元素数组（需记录：下标 0/1 各代表绕组/外壳等，并决定是否改双头网络）
-    - [ ] 单位（°C / 0.1°C / 内部码值）
-    - [ ] 是否已做滤波或仅原始 ADC 阶梯
-  - **建议**：静止与负载两段 bag，对比温度上升曲线与手持测温或驱动器上位机（若有）。
+- [x] **确认 `one.temperature` 的形态、单位与语义**（**已基线确定**）
+  - **结论**：**单标量 `float32`**；**单位 °C**；IDL 见 **TienKung_ROS** `MotorStatus.msg`；总线解码见 **TienKung_ROS** `MotorDevice.cpp`（`(data[6]-50)/2` → 浮点 °C 尺度）。与 `plan.md` §0、§2.1 一致。
+  - **仍建议实机抽查**：静止/负载 bag 曲线是否合理、与机载显示是否一致；若固件与 **TienKung_ROS** 分叉，更新文档。
+  - ~~多元素数组 / 非 °C 码值~~：不作为当前基线；若实机发现与 IDL 不符，再开项。
 
 - [ ] **确认 `one.current` 的单位与符号约定**
   - **为何重要**：`tau_est = current * ct_scale` 是核心特征；单位或符号错会导致 `tau_sq` 与真实负载无关。
-  - **待确定**：
-    - [ ] 安培还是毫安或定点整数
-    - [ ] 是否与关节力矩方向约定一致（正电流对应正 `tau` 定义）
+  - **已由 TienKung_ROS 静态回答**：
+    - [x] **单位**：IDL **`float32 current # A`** → **安培**（非 mA 整型）。
+  - **仍须实机/小运动**：
+    - [ ] **符号**：正电流与关节正方向、`tau_est` 是否一致（IDL 不定义）。
   - **建议**：单关节小幅度正弦运动，对照 `pos/speed` 与 `current` 符号是否合理。
 
 - [ ] **实机验证 `Deploy → Ultra T_leg[0..11]` 映射**
@@ -159,15 +184,19 @@ P1 保证：**除温度电流外，其余输入在物理上与训练假设一致
 
 - [ ] **确认 `one.name`（或等价 id 字段）与 `getIndexById` 的输入语义**
   - **为何重要**：映射链路的起点错了，后面全错。
-  - **待确定**：
-    - [ ] 传入的是字符串名、CAN id 还是二者之一由配置决定
-  - **建议**：读 `RLControlNewPlugin.cpp` 与 `bodyIdMap.h` 调用点，与实机一帧原始 `status` 对照。
+  - **已由 TienKung_ROS 静态回答**：
+    - [x] **`name` 类型为 `uint16`**，语义为 **`MotorName` 枚举**（见 `MotorName.msg`），**不是** UTF-8 字符串。
+  - **仍须与 Deploy 对照**：
+    - [ ] **Deploy** `getIndexById(one.name)` 若期望 CAN id，则须确认 **ROS2 消息与插件**是否与 **TienKung_ROS** 枚举一致；否则映射表以实机为准。
+  - **建议**：实机一帧 `status` 打印 `name` 数值，对照 `MotorName.msg` 与 `bodyIdMap`。
 
 - [ ] **确认 `one.pos` / `one.speed` 的单位与参考系**
   - **为何重要**：与 Lab 仿真或日志对齐、与 `|dq|` / 数值 `ddq` 一致。
+  - **已由 TienKung_ROS 静态回答**：
+    - [x] **`pos`**：`# rad`。
+    - [x] **`speed`**：IDL 注释为 `rad`（**疑似笔误**）；与 `MotorDevice` 解码为角速度区间 **SPD_MIN/MAX** 一致，工程上按 **rad/s** 使用。
   - **待确定**：
-    - [ ] `pos` 是否为弧度、是否连续无跳变（或是否已包裹到 ±π）
-    - [ ] `speed` 是否为 rad/s
+    - [ ] 是否连续无跳变 / 是否包裹（依赖控制与记录方式）。
   - **建议**：与仿真同一动作对比曲线形状（尺度与符号）。
 
 - [ ] **确认 `temperature` 与 `pos/speed/current` 在同一中间向量下标上对齐**
@@ -178,16 +207,20 @@ P1 保证：**除温度电流外，其余输入在物理上与训练假设一致
 
 - [ ] **确认 `/leg/status` 消息体与 `motor_num` 的关系**
   - **为何重要**：若一条消息含全身电机，采集端必须只取腿 12 路，不能按数组前 12 个元素截取。
+  - **已由 TienKung_ROS 静态回答**：
+    - [x] **`status` 为变长数组**，**不保证**「仅腿」或「顺序固定」；**不能**按前 12 元素截取。
   - **待确定**：
-    - [ ] 每条消息是否只含腿
-    - [ ] 若含多段，如何按 id 过滤出 `T_leg` 对应元素
-  - **建议**：打印单帧 `status` 长度与所有 `name`/id。
+    - [ ] 实机单条 `/leg/status` 是否只聚合腿电机（由驱动节点配置决定）。
+    - [ ] 若混有臂/腰，**按 `name`∈腿枚举** 过滤到 Ultra `T_leg`。
+  - **建议**：打印单帧 `status` 长度与所有 `name`。
 
 - [ ] **拿到 `Imu` 消息权威定义并对照插件读取字段**
   - **为何重要**：可选 9 维特征；欧拉角顺序、陀螺/加计坐标系错会导致无效甚至有害输入。
-  - **待确定**：
-    - [ ] `euler` 是 yaw-pitch-roll 还是其它顺序，单位是否为弧度
-    - [ ] `angular_velocity`、`linear_acceleration` 是否在机体系，重力是否已从加计中补偿
+  - **已由 TienKung_ROS 静态回答（IDL）**：
+    - [x] **`bodyctrl_msgs/Imu.msg`**：`geometry_msgs` 四元数/角速度/线加速度 + **`bodyctrl_msgs/Euler euler`**（`roll`/`pitch`/`yaw` 三字段 **`float64`**）。
+    - [x] **Xsens 路径**：`XSensImuPlugin.cpp` 将设备欧拉从 **度转为弧度** 后写入 `msg->euler.*`。
+  - **待确定**（依赖**实际发布的 IMU 插件**是否与 Xsens 一致）：
+    - [ ] Deploy 侧 `OnXsensImuStatusMsg` 所用消息是否与上述一致；陀螺/加计坐标系与重力补偿。
   - **建议**：`ros2 interface show` + 静止/绕单轴旋转标定小实验。
 
 - [ ] **测量 `/imu/status` 频率并与 `/leg/status` 对齐策略定稿**

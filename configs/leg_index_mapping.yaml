@@ -13,6 +13,7 @@
 
 n_leg_motors: 12
 
+# T_leg[i] 的物理含义：电机温度，单位 °C（与 bodyctrl_msgs/MotorStatus.temperature 一致，见 TienKung_ROS MotorStatus.msg）。
 # 顺序即 T_leg[0]..T_leg[11]；关节名与 Ultra USD/MJCF 中 joint name 一致（*_joint）
 motor_names:
   - hip_roll_l_joint

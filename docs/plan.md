@@ -13,6 +13,10 @@
 * **验收标准（初稿）**: 主温度预测未来 **15 s**，**12 关节等权算术平均 MAE ≤ 1.5°C**。  
 * **关节权重接口**: 配置权重 `w_0..w_11`（顺序同 `motor_names`），默认全 **1**；训练可用加权损失 \(\mathcal{L} = \sum_i w_i \mathcal{L}_i / \sum_i w_i\)；**验收与 Gate 仅以等权平均 MAE 为准**；可选可学习 \(w_i\)（归一化后），见 §6.1。  
 * **运行约束**: 单次前向推理 **≤ 5 ms**（FP16，机载或 PC）。
+* **电机温度 `temperature` 的类型与单位（已确定）**:  
+  * **IDL**：`bodyctrl_msgs/msg/MotorStatus.msg`（见 **`TienKung_ROS`** 仓库 `src/bodyctrl_msgs/msg/MotorStatus.msg`）定义为 **`float32 temperature`**，**单标量**（非数组）。  
+  * **单位**：**摄氏度 (°C)**。与消息内 `pos`（rad）、`current`（A）并列时，`temperature` 在工程上按 **°C** 解释；底层总线字节在 `TienKung_ROS` 的 `MotorDevice.cpp` 中解码为 **`temperature = (msg.data[6] - 50) / 2`**，结果仍为浮点 **°C** 尺度。  
+  * **本专项**：监督与预测一律在 **°C** 下计算 MAE 等指标；与 `plan.md` §2.1 标量温度假设一致。
 
 ---
 
@@ -61,7 +65,7 @@
 * `one.pos` → 位置  
 * `one.speed` → 角速度  
 * `one.current` → 与配置 `ct_scale` 相乘得力矩估计（见 `tg22_config.yaml` 中 `ct_scale`）  
-* `one.temperature` → 温度（插件赋给 `temperature_midVec`）  
+* `one.temperature` → **电机温度，单精度浮点，单位 °C**（与 `MotorStatus.msg` 及 **TienKung_ROS** 解码一致；插件赋给 `temperature_midVec`）  
 * `one.name` → 传入 `idMap.getIndexById(...)` 以得到 `index`（`bodyIdMap.h` 中 `getIndexById(int canId)`）
 
 **配置 `Deploy_Tienkung/rl_control_new/config/tg22_config.yaml`（插件 `LoadConfig` 使用）**
@@ -74,7 +78,7 @@
 * `angular_velocity.{x,y,z}`  
 * `linear_acceleration.{x,y,z}`  
 
-**说明**: `bodyctrl_msgs` 的 **`.msg` 文件不在上述两仓库内**；字段名以插件实际成员访问为准。若需确认 `temperature` 是否为数组、单位等，属 **§1.5** 待澄清项。
+**说明**: `MotorStatus.msg` 全文可在 **`TienKung_ROS`** 仓库查阅。`temperature` 为 **`float32` 单标量**；**单位已约定为 °C**（见 §0）。若实机消息与 **TienKung_ROS** 定义不一致，以实机 `ros2 interface show` 与 bag 为准并更新文档。
 
 ### 1.4 TienKung-Lab — 准许作为原始数据或布局参考的接口（仓库明示）
 
@@ -91,7 +95,7 @@
 
 | 类别 | 说明 |
 |:-----|:-----|
-| `MotorStatusMsg` 完整模式 | 各字段类型、单位、`temperature` 单/多通道、`one.name` 与 CAN 表一致性（需 `bodyctrl_msgs` 源或实机 `ros2 interface show`） |
+| `MotorStatusMsg` 与实机一致性 | **TienKung_ROS** 已给出 `MotorStatus.msg`：`temperature` 为 **float32、单通道、°C**；若实机固件与仓库分叉，以 bag / `interface show` 核对 |
 | 电压、原生角加速度 `ddq`、故障/CRC/状态字 | Deploy 插件当前**未读**；若存在于其它 Topic，需单独列出并入库定义 |
 | BMS、主板温、风扇、机内环境温度 | 插件**未订阅** |
 | 实验室环境温度、湿度计 | **非**两仓库接口，属外设记录 |
@@ -111,16 +115,16 @@
 | IMU 上下文 | Deploy §1.3 所列 9 个标量分量（可选特征） |
 | 工况/轨迹参考 | Lab 数据集与 `dof_pos`/`dof_vel` 布局（**无温度**，仅作实验设计或离线对齐） |
 
-**双通道温度**: 仅当 **§1.5** 澄清 `temperature` 为多元素后，才可设计双头网络。本工程 **基线假设** 为 **`one.temperature` 单一标量**；在此假设下构建 LSTM 时**准许使用的数据**见 **§2.1**。
+**温度通道与单位**: 基线为 **`one.temperature` 单一 `float32`，单位 °C**（见 §0、**TienKung_ROS** `MotorStatus.msg`）。若将来消息扩展为多元素，再评估双头网络；当前构建 LSTM 的准许数据见 **§2.1**。
 
-### 2.1 假设 `temperature` 为单一标量时的 LSTM 数据清单
+### 2.1 假设 `temperature` 为单一标量（°C）时的 LSTM 数据清单
 
 以下严格对应 **§1.3–§1.4 白名单**与 **§0** 允许的确定性后处理（不新增 Topic）。
 
 #### 2.1.1 监督标签（预测目标）
 
-* **每关节、每时刻**：将 `/leg/status` 中每条 `status` 经 **Deploy → `T_leg[0..11]`** 映射后，取 **`one.temperature`（标量）** 作为温度真值。  
-* **多步预测**：在同一时间序列上对 `T` 构造滑动窗口，用未来 \(h\) 步的标量温度作监督，**不引入**其它温度通道或仿真热标签。
+* **每关节、每时刻**：将 `/leg/status` 中每条 `status` 经 **Deploy → `T_leg[0..11]`** 映射后，取 **`one.temperature`（标量，°C）** 作为温度真值。  
+* **多步预测**：在同一时间序列上对 \(T\)（°C）构造滑动窗口，用未来 \(h\) 步的标量温度（°C）作监督，**不引入**其它温度通道或仿真热标签。
 
 #### 2.1.2 每关节输入特征（针对每个 `T_leg[i]`，\(i=0..11\)）
 
@@ -129,7 +133,7 @@
 | \(q\) | `one.pos`（映射到 \(i\)） | 位置 |
 | \(dq\) | `one.speed`（映射到 \(i\)） | 角速度 |
 | \(\tau_{est}\) | `one.current × ct_scale[j]` | \(j\) 为 Deploy 中间向量下标，需与 \(i\) 经固定映射表对应；`ct_scale` 来自 `tg22_config.yaml` |
-| \(T\) | `one.temperature`（标量，映射到 \(i\)） | 当前温；可做 EMA 等平滑 |
+| \(T\) | `one.temperature`（标量 **°C**，映射到 \(i\)） | 当前温；可做 EMA 等平滑 |
 | \(\tau_{sq}\) | \(\tau_{est}^2\) | 焦耳热代理（由 \(\tau_{est}\) 平方导出）；释义见 **§2.1.2.1** |
 | \(\|dq\|\) | \(\|dq\|\) | 摩擦 / 机械损耗相关代理（由 `speed` 取绝对值）；释义见 **§2.1.2.2** |
 | \(\|ddq\|\)（数值） | 对已落盘的 `speed` 按时间差分 | **仅允许**此类后处理；原生 `ddq` Topic 属 **§1.5** |
@@ -183,7 +187,7 @@
 #### 2.1.5 张量组织（与 §4、§6 衔接）
 
 * **输入序列**：在 **20 Hz**（或自 `dt` 降采样后的统一网格）上，对每个关节拼接 §2.1.2（及可选 §2.1.3）特征，得到 `[B, L, D]`。  
-* **输出**：对每个关节预测未来 \(H\) 个时间步的 **标量温度**；12 关节可 **12 路独立头** 或 **批量维 `×12`**，由实现选定；损失与验收仍遵循 **§0** 等权 MAE 与 **§6.1** 权重约定。
+* **输出**：对每个关节预测未来 \(H\) 个时间步的 **标量温度（°C）**；12 关节可 **12 路独立头** 或 **批量维 `×12`**，由实现选定；损失与验收仍遵循 **§0** 等权 MAE 与 **§6.1** 权重约定。
 
 ---
 
@@ -231,14 +235,14 @@
 
 ## 8. 风险与待办
 
-* **P0**: `T_leg` 与 Deploy 腿向量的**名称映射**实现与单测；`one.temperature` 语义见 §1.5。  
+* **P0**: `T_leg` 与 Deploy 腿向量的**名称映射**实现与单测；**温度单位 °C** 已约定（§0），映射与 `name` 字段语义仍须实机核对。  
 * **P1**: 是否仅在 §1.3–1.4 范围内扩展特征；任何新 Topic 须先入库再写入 §1.3。
 
 ### 8.1 仍待您确认（与 §1.5 区分）
 
 1. 监督是否**仅** Deploy 实机日志（推荐，与 §1.4 结论一致）。  
 2. RL 闭环是否接入热预测及软/硬阈值数值。  
-3. `thermal_lstm_modeling.md` 与 G1/29DOF 脱钩、改为 Ultra+12 腿 + 本白名单。
+3. `thermal_lstm_modeling.md`：文首与 §1、§2、§3 已与 Ultra+**°C**+单通道对齐；后续章节若仍含 G1 字样，以本文 **`plan.md`** 为准。
 
 ---
 
@@ -247,7 +251,7 @@
 | Phase | 内容 | Gate |
 |:------|:-----|:-----|
 | 0 | 仅准许 Topic 可读、`T_leg` 映射正确 | 数据链路 OK |
-| 1 | §1.5 中与热相关的字段澄清 | 标签与单位明确 |
+| 1 | 实机与 **TienKung_ROS** `MotorStatus` 定义一致；映射与 `name` 语义 | 标签链路与 °C 标定可信 |
 | 2–5 | 采集 / 训练 / 离线 MAE / 在线延迟 | 等权 MAE 与 ≤5 ms |
 
 ---

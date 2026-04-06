@@ -1,35 +1,34 @@
-# 宇树G1全关节热动力学LSTM建模规格书
+# 天工 Ultra 腿部（12 关节）热动力学 LSTM 建模规格书
 
-> **基准文档**: `plan.md` V2.0  
-> **建模策略**: 按电机类型分组（GearboxS / GearboxM / GearboxL）独立LSTM  
-> **预测目标**: 双通道联合预测（主任务：线圈温度，辅助任务：外壳温度）  
-> **邻接策略**: 数据驱动的热耦合发现  
-> **全局特征**: 作为消融实验项，初始版本不纳入  
+> **基准文档**: `plan.md`（Ultra；`T_leg` 顺序以 `ultra_env` 为准）  
+> **消息与单位**: `bodyctrl_msgs/msg/MotorStatus.msg`（**`TienKung_ROS`** 仓库 `src/bodyctrl_msgs/msg/MotorStatus.msg`）：**`float32 temperature`**，**工程约定为摄氏度 (°C)**；驱动层解码见 **TienKung_ROS** `MotorDevice.cpp`（`temperature = (msg.data[6] - 50) / 2`，输出浮点 **°C** 尺度）。  
+> **预测目标（基线）**: **单通道**关节温度 \(\hat{T}\)（**°C**），未来 \(H\) 步；**不**再采用下文历史稿中的 G1 双通道 `temperature[0]` / `temperature[1]` 作为默认基线。  
+> **建模策略**: 12 腿统一骨干或分头、权重与验收见 `plan.md` §0、§6.1。  
+> **说明**: 自 **§2** 起的集总参数双节点（线圈/外壳）方程保留作**物理直觉**；**数据接口、特征列与标签以 `plan.md` §1–§2.1 白名单为准**。文中仍出现的「G1 / 29DOF / 双通道 uint8 / DDS」等段落为**历史附录**，实现 Ultra 专项时应以 **`plan.md`** 为准，勿混用全身关节维与双温度通道形状。
 
 ---
 
 ## 1. 问题定义
 
-### 1.1 数学形式化
+### 1.1 数学形式化（Ultra：单通道摄氏度）
 
-给定过去 $L$ 个时间步的特征序列 $\mathbf{X} = \{x_{t-L+1}, \ldots, x_t\}$，预测目标关节未来 $H$ 个时间节点的温度轨迹：
+给定过去 $L$ 个时间步的特征序列 $\mathbf{X} = \{x_{t-L+1}, \ldots, x_t\}$，预测目标关节未来 $H$ 个时间节点的**温度标量轨迹（°C）**：
 
-$$f_\theta(\mathbf{X}) \rightarrow (\hat{\mathbf{y}}^{coil},\ \hat{\mathbf{y}}^{shell}) \in \mathbb{R}^{H} \times \mathbb{R}^{H}$$
+$$f_\theta(\mathbf{X}) \rightarrow \hat{\mathbf{y}} \in \mathbb{R}^{H}$$
 
-其中：
-- $\hat{\mathbf{y}}^{coil} = [\hat{T}^{coil}_{t+h_1}, \ldots, \hat{T}^{coil}_{t+h_H}]$，主预测目标（线圈/绕组温度）
-- $\hat{\mathbf{y}}^{shell} = [\hat{T}^{shell}_{t+h_1}, \ldots, \hat{T}^{shell}_{t+h_H}]$，辅助预测目标（外壳/减速器温度）
-- $h_k \in \{10, 20, 40, 60, 100, 140, 200, 240, 300, 400\}$ 步（对应 @ 20Hz 的 $\{0.5, 1, 2, 3, 5, 7, 10, 12, 15, 20\}$ 秒）
+其中 $\hat{\mathbf{y}} = [\hat{T}_{t+h_1}, \ldots, \hat{T}_{t+h_H}]$，$T$、$\hat{T}$ 与观测温度均约定为 **°C**，与 `MotorStatus.temperature` 一致。$h_k$ 可取与采样率匹配的步长集合（如 @ 20Hz 对应 0.5s…15s 等，以 `plan.md` 验收视距为准）。
+
+**（历史稿 · G1 双输出，不作为 Ultra 基线）** 原表述为双输出 $(\hat{\mathbf{y}}^{coil},\hat{\mathbf{y}}^{shell})$；Ultra **基线**改为上式单输出 \(\hat{\mathbf{y}}\)（°C）。
 
 ### 1.2 约束条件
 
 | 指标 | 要求 |
 |:-----|:-----|
-| 线圈温度 MAE（全工况） | $\le 1.5°C$ |
-| 线圈温度 MAE（高负载 Phase IV） | $\le 2.0°C$ |
-| 最远视距 (20s) MAE | $\le 2.5°C$ |
-| 单步最大绝对误差 | $\le 5.0°C$ |
-| 前向推理延迟（含预处理） | $\le 5\text{ms}$（FP16, Jetson Orin） |
+| 关节温度 MAE（全工况，12 腿等权） | $\le 1.5°C$（主视距等以 `plan.md` 为准） |
+| 高负载子集 MAE（可选） | 可放宽，见 `plan.md` / 实验协议 |
+| 最远视距 MAE（可选） | 可单独报表 |
+| 单步最大绝对误差 | $\le 5.0°C$（建议上限） |
+| 前向推理延迟（含预处理） | $\le 5\text{ms}$（FP16, Jetson Orin 或等价平台） |
 
 ### 1.3 因果性约束
 
@@ -40,6 +39,8 @@ $$f_\theta(\mathbf{X}) \rightarrow (\hat{\mathbf{y}}^{coil},\ \hat{\mathbf{y}}^{
 ## 2. 物理热力学建模基础
 
 LSTM 是数据驱动模型，但特征工程须以物理热力学为先验指导。本节建立简化的集总参数热模型 (Lumped Parameter Thermal Model)，用于指导特征选取和解释模型行为。
+
+**Ultra 与下文的对应关系**：双节点方程中的 \(T_{coil}\)、\(T_{shell}\) 为**物理抽象**；**观测上**基线仅有 **`MotorStatus.temperature` 单通道 `float32`（°C）**（见文首说明）。表 2.2 中历史映射 `temperature[0]` / `temperature[1]` **不适用于 Ultra ROS 接口**；实现时应将 **单一 \(T\)（°C）** 作为状态变量输入，或将该观测视为对某一集总温度的近似。**特征白名单仍以 `plan.md` §2.1 为准**。
 
 ### 2.1 单关节集总热方程
 
@@ -63,8 +64,8 @@ $$C_{shell} \frac{dT_{shell}}{dt} = G_{c \to s}(T_{coil} - T_{shell}) - \underbr
 | $I^2 R \propto \tau^2$ | `tau_est` | $\tau_{sq} = \tau_{est}^2$ |
 | $\mu \cdot \|\omega\|$ | `dq` | $dq_{abs} = \|dq\|$ |
 | $\frac{dQ}{dt}$ 动态突变 | `ddq` | $ddq_{abs} = \|ddq\|$ |
-| $T_{coil}$ | `temperature[0]` | EMA 平滑 |
-| $T_{shell}$ | `temperature[1]` | EMA 平滑 |
+| $T$（观测，°C） | **`MotorStatus.temperature`**（`float32`） | EMA 平滑；**Ultra 基线**无 `temperature[0]`/`[1]` 双通道 |
+| （历史 G1）$T_{coil}$ / $T_{shell}$ | `temperature[0]` / `[1]` | 仅作 G1 对照，**Ultra 不采用** |
 | 电功率 $P = V \cdot I$ | `vol` | 直接使用或 $P_{est} = V \cdot \|\tau \cdot dq\| / \eta$ |
 | $T_{amb}$ | `IMUState_.temperature` 或 `MainBoardState_.temperature` | 取可用源 |
 | 风扇强制对流 | `MainBoardState_.fan_state` | 归一化均值 |
@@ -86,16 +87,30 @@ $$C_{shell} \frac{dT_{shell}}{dt} = G_{c \to s}(T_{coil} - T_{shell}) - \underbr
 
 ### 3.1 原始特征提取
 
-对每个关节 $i \in \{0, \ldots, 28\}$，在每个采样时刻 $t$（20Hz）提取以下原始信号：
+**Ultra 基线（12 腿，`T_leg[i]`，见 `plan.md`）**：在每个采样时刻 $t$（如 20Hz 降采样）从 **`/leg/status`** 映射后的状态提取：
 
 ```python
+# Ultra / Deploy 白名单（与 plan.md §2.1 一致）；i ∈ {0..11} 为 Ultra 腿索引
 raw_features_per_joint = {
-    "tau_est":        motor_state[i].tau_est,        # float32, 力矩 [Nm]
-    "dq":             motor_state[i].dq,              # float32, 角速度 [rad/s]
-    "ddq":            motor_state[i].ddq,             # float32, 角加速度 [rad/s²]
-    "temperature_0":  motor_state[i].temperature[0],  # uint8, 线圈温度 [°C]
-    "temperature_1":  motor_state[i].temperature[1],  # uint8, 外壳温度 [°C]
-    "vol":            motor_state[i].vol,              # float32, 电压 [V]
+    "q":             pos,           # float32, rad（MotorStatus.pos）
+    "dq":            speed,         # float32, rad/s（MotorStatus.speed）
+    "current":       current,       # float32, A（MotorStatus.current）
+    "tau_est":       current * ct_scale[j],  # 力矩估计 [Nm]，j 与 Deploy 中间向量对齐后映射到 i
+    "temperature":   temperature,   # float32, °C（MotorStatus.temperature）
+    # ddq、vol 等未在白名单则不在此列；ddq 可由 speed 数值差分
+}
+```
+
+**（历史稿 · G1，29 关节，仅供参考）** 对每个关节 $i \in \{0, \ldots, 28\}$：
+
+```python
+raw_features_per_joint_g1 = {
+    "tau_est":        motor_state[i].tau_est,
+    "dq":             motor_state[i].dq,
+    "ddq":            motor_state[i].ddq,
+    "temperature_0":  motor_state[i].temperature[0],  # uint8
+    "temperature_1":  motor_state[i].temperature[1],
+    "vol":            motor_state[i].vol,
 }
 ```
 
@@ -106,15 +121,15 @@ raw_features_per_joint = {
 | $\tau_{sq}$ | $\tau_{est}^2$ | 1 | 焦耳热功率代理 |
 | $dq_{abs}$ | $\|dq\|$ | 1 | 摩擦热功率代理 |
 | $ddq_{abs}$ | $\|ddq\|$ | 1 | 动态载荷突变检测 |
-| $T_{coil}$ | $\text{EMA}(\text{temperature}[0],\ \alpha=0.05)$ | 1 | 线圈温度（平滑后） |
-| $T_{shell}$ | $\text{EMA}(\text{temperature}[1],\ \alpha=0.05)$ | 1 | 外壳温度（平滑后） |
+| $T$ | $\text{EMA}(\text{temperature},\ \alpha=0.05)$（**°C**） | 1 | Ultra：单通道 `MotorStatus.temperature` |
+| （G1）$T_{coil}$ / $T_{shell}$ | EMA(`temperature[0]`/`[1]`) | 各 1 | 历史双通道，**Ultra 基线不用** |
 | $V_{mot}$ | `vol` 直接使用 | 1 | 电压 |
 
 EMA 平滑公式：
 
 $$S_t = \alpha \cdot Y_t + (1 - \alpha) \cdot S_{t-1}, \quad \alpha = 0.05$$
 
-`uint8` 阶梯跳变的温度数据在 20Hz 采样下大量相邻帧值相同，EMA 将其转化为平滑连续信号，改善梯度流。
+Ultra 侧 **`float32` °C** 仍可对 \(T\) 做 EMA 以抑制噪声；若历史 G1 使用 `uint8`，阶梯跳变在 20Hz 下相邻帧常相同，EMA 同样有助于梯度流。
 
 ### 3.3 数据驱动的热耦合邻接发现
 

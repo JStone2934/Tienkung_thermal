@@ -2,7 +2,8 @@
 
 > **关节顺序（唯一准则）**：以 **Ultra** 为准（`TienKung-Lab/legged_lab/envs/ultra/ultra_env.py` 中 `find_joints`）；**禁止**用 Deploy 腿向量下标代替 `T_leg[i]`。  
 > **数据**：**仅**使用 **`Deploy_Tienkung`** 与 **`TienKung-Lab`** 两仓库内**已定义**的接口（源码/配置/README/注释中的布局）；其余一律为 **待获取备选**，不得默认存在。  
-> 详细条款见 `Tienkung_thermal/docs/plan.md` §0、§1。
+> 详细条款见 `Tienkung_thermal/docs/plan.md` §0、§1。  
+> **`temperature` 单位**：**摄氏度 (°C)**，类型 **`float32` 单标量**；IDL 见 **`TienKung_ROS`** `src/bodyctrl_msgs/msg/MotorStatus.msg`，解码见同仓库 `MotorDevice.cpp`（与 `plan.md` §0 一致）。
 
 ---
 
@@ -34,7 +35,7 @@
 
 **每条 `MotorStatusMsg.status[]` 元素 `one`（插件已读）**
 
-- `pos`, `speed`, `current`, `temperature`, `name`（用于 `getIndexById`）
+- `pos`, `speed`, `current`, **`temperature`（`float32`，°C）**, `name`（用于 `getIndexById`）；与 **TienKung_ROS** `MotorStatus.msg` 一致
 
 **`tg22_config.yaml`（插件加载）**
 
@@ -61,7 +62,8 @@
 
 | 项 | 说明 |
 |:---|:-----|
-| `bodyctrl_msgs` `.msg` 全文 | 两仓库无包源码；`temperature` 类型/通道数/单位待澄清 |
+| ~~`MotorStatus.temperature` 类型与单位~~ | **已确定**：见 **`TienKung_ROS`** `MotorStatus.msg`（`float32`，单通道）及 **`plan.md` §0**（**°C**） |
+| `MotorStatusMsg` 与实机固件是否分叉 | 以 bag / `ros2 interface show` 与 **TienKung_ROS** 定义交叉核对 |
 | 电压、原生 `ddq`、故障/CRC | 插件未读；其它 Topic 未在两仓库列出 |
 | BMS、主板温、风扇 | 插件未订阅 |
 | 环境温度计 | 非仓库接口 |
@@ -92,6 +94,7 @@ Deploy `bodyIdMap.h` 腿中间向量顺序：**l_hip_roll, l_hip_pitch, l_hip_ya
 | `Deploy_Tienkung/.../RLControlNewPlugin.cpp` | Topic 与 status/IMU 读取 |
 | `Deploy_Tienkung/.../bodyIdMap.h` | Deploy 腿索引与 CAN |
 | `Deploy_Tienkung/rl_control_new/config/tg22_config.yaml` | `dt`, `ct_scale` |
+| `TienKung_ROS/src/bodyctrl_msgs/msg/MotorStatus.msg` | **`float32 temperature`（°C）** 的权威 IDL |
 
 ---
 
@@ -109,7 +112,7 @@ Deploy `bodyIdMap.h` 腿中间向量顺序：**l_hip_roll, l_hip_pitch, l_hip_ya
 |:--------------|:-----------------|
 | 全身 **29** 关节 | 仅 **12** 条腿关节 |
 | 按 `GearboxS/M/L` 分 **3** 个模型 | 先做 **Ultra 12 腿统一基线**，后续再视数据量决定是否分组 |
-| 双温度通道：`temperature[0]` / `temperature[1]` | 基线仅承认 **`one.temperature` 单标量** |
+| 双温度通道：`temperature[0]` / `temperature[1]` | 基线仅承认 **`one.temperature` 单标量 `float32`，单位 °C** |
 | 原始 `tau_est` / `ddq` / `vol` 可直接读取 | `tau_est = current * ct_scale`；`ddq` 仅能由 `speed` 数值差分；`vol` 暂不纳入 |
 | DDS / SDK 低层接口 | **ROS2** `/leg/status` + 可选 `/imu/status` |
 | 关节下标可直接用于训练 | 必须先映射到 **Ultra 顺序 `T_leg[0..11]`**（唯一准则） |
@@ -121,7 +124,7 @@ Deploy `bodyIdMap.h` 腿中间向量顺序：**l_hip_roll, l_hip_pitch, l_hip_ya
 - `q = one.pos`
 - `dq = one.speed`
 - `tau_est = one.current * ct_scale[index]`
-- `T = one.temperature`
+- `T = one.temperature`（**°C**）
 - `tau_sq = tau_est^2`
 - `dq_abs = |dq|`
 - `ddq_abs = |diff(speed) / dt|`
@@ -258,8 +261,8 @@ Dataset 不再默认：
 
 ### Phase A：先打通数据链路
 
-1. 明确 `/leg/status` 中 `one.temperature` 的语义、单位、是否单标量。  
-2. 实现并单测 `Deploy -> T_leg[0..11]` 映射。  
+1. ~~明确 `one.temperature` 的形态与单位~~ **已约定**：**单标量 `float32`，°C**（`TienKung_ROS` `MotorStatus.msg` + `plan.md` §0）；实机仍建议抽样对照。  
+2. 实现并单测 `Deploy -> Ultra T_leg[0..11]` 映射。  
 3. 落盘 Ultra 专用中间数据格式（至少含 `q/dq/current/tau_est/temperature`）。  
 
 ### Phase B：建立单温度基线模型
@@ -282,7 +285,7 @@ Dataset 不再默认：
 
 ### 当前优先级
 
-- **P0**：`one.temperature` 语义确认  
+- ~~**P0**：`one.temperature` 语义确认~~ **已确定：°C、单通道 `float32`**（见上）  
 - **P0**：`Deploy → Ultra T_leg` 语义映射实现与单测（**Ultra 顺序为准**）  
 - **P1**：Ultra 专用 HDF5 / Dataset 契约定稿  
 - **P1**：单温度基线 LSTM 跑通  
