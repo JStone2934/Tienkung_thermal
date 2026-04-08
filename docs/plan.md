@@ -3,6 +3,7 @@
 ## 0. 文档说明与项目基准
 
 * **文档状态**: Ultra 专版；**不**再以第三方厂商 IDL（如宇树 G1）为接口依据。
+* **LSTM 代码落地与配置（方案 A）**: 里程碑、目录与 `configs/ultra_thermal_lstm.yaml` 约定见 **`docs/ultra_thermal_lstm_implementation.md`**；与旧 `configs/thermal_predictor.yaml`（MLP）**分文件**，避免混用。
 * **关节顺序的权威来源（唯一准则）**: **Ultra**，即 **`TienKung-Lab/legged_lab/envs/ultra/ultra_env.py`** 中 `left_leg_ids` / `right_leg_ids` 的 `find_joints` 顺序。`Tienkung_thermal/configs/leg_index_mapping.yaml` 仅与该顺序**对齐引用**，**不以 YAML 覆盖 Lab**；**禁止**以 `Deploy_Tienkung` 腿中间向量下标替代 `T_leg[i]`。
 * **数据使用原则（硬性）**: 建模、训练与评估所用的**原始观测**只能来自 **`Deploy_Tienkung`** 与 **`TienKung-Lab`** 两仓库中**已写明**的接口（源码、配置、README、脚本与注释中的数据布局）。**不**将两仓库未定义的 Topic/字段/消息成员当作既定事实。  
   * **允许**：对上述已定义标量/向量做**确定性后处理**（例如对插件已订阅的 `speed` 做时间差分得到数值角加速度、对温度做 EMA），不新增数据源。  
