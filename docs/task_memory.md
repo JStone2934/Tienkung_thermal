@@ -293,4 +293,44 @@ Dataset 不再默认：
 
 ---
 
+## 9. 全量 rosbag → 单一数据集（仅 `/leg/status`）— 计划草案与待决事项
+
+> **依据**：`plan.md` §1.2–1.3、§2.1（监督与特征白名单）、§4（20 Hz 建议）、§5（采集协议）；`thermal_lstm_modeling.md` §1.2（`L=100`、20 Hz、horizon 等）；`configs/leg_index_mapping.yaml`（Ultra `T_leg[0..11]`）。  
+> **范围**：原始 Topic **仅** `/leg/status`（`MotorStatusMsg`）；**不**包含 `/leg/motor_status`（`MotorStatusMsg1`），与 `plan.md` 监督来源一致。
+
+### 9.1 目标（工程上）
+
+- 遍历 `data/bags/` 下**全部**有效 **rosbag2** 目录（每个目录含 `metadata.yaml` + 至少一个 `.db3`）。
+- 从每条 bag 中**仅**读取 `/leg/status`，解码为 `MotorStatusMsg`。
+- 将 `status[]` 中每条 `one` 按 **Deploy `name`（CAN）→ Ultra `T_leg[i]`** 固定映射重排为 **12 列**向量（缺关节或重复名的处理策略见 **§9.3**）。
+- 按统一时间轴落盘为**一个**（或按 session 多文件 + 索引表）训练用中间格式，字段至少覆盖 `plan.md` §2.1.2 所需：`q`, `dq`, `current`, `temperature`（°C），并派生 `tau_est`（需 **`ct_scale` 与 Deploy 下标 `j` 对齐后再映射到 Ultra**）、`tau_sq`、`|dq|`、数值 `|ddq|` 等；时间戳单调、采样率对齐 **`thermal_lstm_modeling.md` 建议的 20 Hz**（或你另定的网格）。
+- 记录元数据：`bag_id` / `session_id`、`source_path`、`t_leg_order`、映射表版本、`ct_scale` 来源与 `tg22_config.yaml` 路径或内嵌快照。
+
+### 9.2 推荐实现顺序（与 §8 Phase A 一致）
+
+1. **Bag 清单**：枚举所有 `rosbag2_*`，跳过损坏目录；多 `.db3` 的 bag 需决定合并策略（见 §9.3）。  
+2. **解码**：`rosbags` + `bodyctrl_msgs`（及 bag 中若引用到的其他类型则按需加包）；或复用/扩展 `scripts/bags/extract_bag_topic_samples.py` 为流式全量读取。  
+3. **映射**：实现 `name` → Ultra 索引 `i∈[0,11]` 的单测（对照 `bodyIdMap` / 实机约定）。  
+4. **重采样**：统一到目标 Hz（默认 20 Hz），记录原始中位间隔供质检。  
+5. **落盘格式**：Parquet / HDF5 / NPZ（与 `§7.5` schema 对齐），并附 **session 级 manifest** 供 Train/Val/Test 划分（**整段 session 不拆**，见 `recording_operations.md` / `thermal_lstm_modeling.md` §6.4）。
+
+### 9.3 待你决定的问题（请先回复，再写具体脚本参数）
+
+| # | 问题 | 为何重要 |
+|:--|:-----|:---------|
+| **Q1** | **输出格式**：单一 **HDF5**、**Parquet**（按 session 分区）、还是 **NPZ** + CSV manifest？ | 影响后续 `Dataset` 与磁盘占用；Parquet 便于增量 append。 |
+| **Q2** | **是否纳入全部 bag**：`data/bags/` 下**所有** `rosbag2_*`，还是只纳入白名单（例如按日期、工况笔记）？ | 与数据质量、错误 session 剔除策略相关。 |
+| **Q3** | **多 db3 的 bag**（一个 `metadata.yaml` 对应多个 shard）：**按时间顺序拼接**还是**只取第一个**或**整目录拒收**？ | 脚本必须明确，否则丢段或乱序。 |
+| **Q4** | **`ct_scale` 来源**：固定使用某一份 **`tg22_config.yaml`** 路径，还是允许「按录制日期选不同配置」？ | 直接影响 `tau_est`；与 `plan.md` §2.1.2 一致。 |
+| **Q5** | **目标采样率**：默认 **`20 Hz`**（`thermal_lstm_modeling.md`），还是保留原始近似 **400 Hz** 再离线降采样？ | 影响特征与标签时间对齐方式。 |
+| **Q6** | **`/leg/status` 中 `status` 长度 ≠ 12 或缺电机**：**丢弃整帧**、**仅填 NaN**、还是 **丢弃该 bag**？ | 数据清洗规则必须统一。 |
+| **Q7** | **是否在本阶段同时导出 `/imu/status`**（若 bag 中有）以便后续 IMU 消融？当前你说「只 `/leg/status`」—若 **否**，则数据集不含 IMU；若 **是**，需额外 `--msg-package` 与对齐策略。 | 与 `plan.md` §2.1.3 可选特征一致。 |
+| **Q8** | **输出目录与体积**：是否接受在仓库外（如数据盘）生成 **数十 GB** 中间文件？**`data/bags` 是否保持仅本地、不提交 Git**（已与 `.gitignore` 一致）？ | 流程与权限。 |
+
+### 9.4 本节后继
+
+- 你确认 **§9.3** 各项后，将在此节补充 **最终参数表、命令行示例、manifest 字段定义**，并实现/对接 `tienkung_thermal/datasets/` 读取逻辑。
+
+---
+
 *与 `plan.md` 同步；待获取项澄清后可迁入 `plan.md` §1.3–1.4 白名单。*
