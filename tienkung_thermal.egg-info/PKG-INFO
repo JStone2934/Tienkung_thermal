@@ -10,11 +10,13 @@ Requires-Dist: numpy>=1.23
 Requires-Dist: pyyaml>=6.0
 Provides-Extra: train
 Requires-Dist: torch>=2.0; extra == "train"
+Requires-Dist: h5py>=3.8; extra == "train"
 Provides-Extra: rosbag
 Requires-Dist: rosbags>=0.9; extra == "rosbag"
 Requires-Dist: h5py>=3.8; extra == "rosbag"
 Provides-Extra: dev
 Requires-Dist: ruff>=0.1.0; extra == "dev"
+Requires-Dist: pytest>=7.0; extra == "dev"
 
 # tienkung_thermal
 
