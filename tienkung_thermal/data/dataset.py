@@ -94,6 +94,7 @@ class UltraThermalDataset(Dataset):
         use_imu: bool = False,
         norm_stats: dict | None = None,
         stride: int = 1,
+        log1p_fields: tuple[str, ...] = ("ddq_abs", "tau_sq"),
     ) -> None:
         if horizon_steps is None:
             horizon_steps = [250, 500, 1000, 1500, 2500, 3500, 5000, 6000, 7500]
@@ -106,6 +107,7 @@ class UltraThermalDataset(Dataset):
         self.norm_stats = norm_stats
         self.stride = max(1, stride)
 
+        self.log1p_fields = set(log1p_fields)
         fields = list(self.RAW_FIELDS)
         if use_derived:
             fields.extend(self.DERIVED_FIELDS)
@@ -115,6 +117,13 @@ class UltraThermalDataset(Dataset):
         self._n_joints = 12
         self._cum_start: list[int] = []  # 每个 session 的起始 offset
         total = 0
+
+        self._feature_names = list(fields)
+        if use_adjacent_temp:
+            self._feature_names.extend(["adj_temp_prev", "adj_temp_next"])
+        self._log1p_indices = [
+            i for i, n in enumerate(self._feature_names) if n in self.log1p_fields
+        ]
 
         for path in h5_paths:
             path_str = str(path)
@@ -188,6 +197,9 @@ class UltraThermalDataset(Dataset):
         )
 
         x_t = torch.from_numpy(x)
+        if self._log1p_indices:
+            for idx in self._log1p_indices:
+                x_t[:, idx] = torch.log1p(x_t[:, idx].abs())
         if self.norm_stats is not None:
             x_t = (x_t - self.norm_stats["mean"]) / (self.norm_stats["std"] + 1e-8)
 

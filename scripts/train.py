@@ -180,6 +180,12 @@ def main() -> None:
     from torch.utils.data import DataLoader
 
     from tienkung_thermal.data.dataset import UltraThermalDataset
+    from tienkung_thermal.data.norm import (
+        compute_norm_stats,
+        load_norm_stats,
+        save_norm_stats,
+        stats_to_tensors,
+    )
     from tienkung_thermal.models.thermal_lstm import UltraThermalLSTM
     from tienkung_thermal.training.trainer import TrainConfig, train
 
@@ -192,6 +198,34 @@ def main() -> None:
     horizon_steps = cfg.get("horizon_steps", [250, 500, 1000, 1500, 2500, 3500, 5000, 6000, 7500])
     seq_len = args.seq_len if args.seq_len is not None else seq_cfg.get("seq_len", 2500)
     stride = args.stride if args.stride is not None else seq_cfg.get("stride", 50)
+
+    # ── 归一化统计量 ──────────────────────────────────────
+    norm_cfg = cfg.get("normalization", {})
+    norm_method = norm_cfg.get("method", "z_score")
+    stats_path = norm_cfg.get("stats_path")
+    log1p_fields = tuple(norm_cfg.get("log1p_fields", ["ddq_abs", "tau_sq"]))
+
+    norm_stats_tensors = None
+    if norm_method == "z_score":
+        if stats_path and Path(stats_path).exists():
+            log.info("loading existing norm stats from %s", stats_path)
+            raw_stats = load_norm_stats(stats_path)
+        else:
+            log.info("computing norm stats from %d train sessions (log1p_fields=%s) ...", len(train_h5), log1p_fields)
+            raw_stats = compute_norm_stats(
+                train_h5,
+                use_derived=use_derived,
+                use_adjacent_temp=use_adj,
+                use_imu=use_imu,
+                log1p_fields=log1p_fields,
+            )
+            default_stats_path = Path(data_cfg.get("h5_dir", "data/processed/leg_status_500hz")) / "norm_stats.json"
+            save_norm_stats(raw_stats, default_stats_path)
+            stats_path = str(default_stats_path)
+        norm_stats_tensors = stats_to_tensors(raw_stats)
+    else:
+        log.info("normalization method=%s — skipping z-score", norm_method)
+
     ds_kwargs = dict(
         seq_len=seq_len,
         horizon_steps=horizon_steps,
@@ -199,6 +233,8 @@ def main() -> None:
         use_adjacent_temp=use_adj,
         use_imu=use_imu,
         stride=stride,
+        norm_stats=norm_stats_tensors,
+        log1p_fields=log1p_fields,
     )
 
     train_ds = UltraThermalDataset(train_h5, **ds_kwargs)

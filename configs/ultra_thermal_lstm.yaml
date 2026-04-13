@@ -61,7 +61,8 @@ data_quality:
 # ── 归一化 ────────────────────────────────────────────────
 normalization:
   method: z_score
-  stats_path: null                # 填训练集统计文件路径
+  stats_path: null                # 填训练集统计文件路径；null 则训练时自动计算并保存
+  log1p_fields: [ddq_abs, tau_sq] # z-score 前先做 log1p 的重尾特征
 
 # ── 训练 ──────────────────────────────────────────────────
 training:
