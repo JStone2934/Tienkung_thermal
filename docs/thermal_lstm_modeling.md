@@ -83,11 +83,12 @@ f_\theta\!\left(\mathbf{X}^{(i)}_t, i\right) \rightarrow \hat{\mathbf{y}}^{(i)}_
 | 10 | `ankle_pitch_r_joint` |
 | 11 | `ankle_roll_r_joint` |
 
-bag 中 `/leg/status` 各电机的 CAN 排列沿用历史 Deploy 腿中间向量顺序，髋关节为 `roll-pitch-yaw`，与 Ultra 的 `roll-yaw-pitch` 不一致，因此：
+bag 中 `/leg/status` 各电机的 **数组顺序**通常为 **`MotorName.msg` 的数值顺序**：左腿 **`51–56`**（`MOTOR_LEG_LEFT_1`…`6`）再接右腿 **`61–66`**（`MOTOR_LEG_RIGHT_1`…`6`）。这与 `Tienkung_thermal/data/leg_status_motor_samples.json` 等解码样例一致。**该顺序沿用历史 Deploy 腿中间向量排列**（髋部为 **R–P–Y**），与 Ultra 的 **R–Y–P** 不一致，因此：
 
-- 禁止直接把 bag 中的 CAN 顺序下标当作 `T_leg[i]`。
-- 必须先依据关节语义名或 `CAN id -> name` 的固定映射（`ros2ws` 中 `MotorName.msg`），将 bag 数据重排到 `T_leg[i]`。
-- `ct_scale[j]`（来自 `ct_scale_profiles.yaml` 或录包同期机载快照）也必须先在 CAN 下标空间对齐，再映射到 Ultra 下标 `i`。
+- 禁止把 **`status` 数组的下标**（0…11）直接当作 `T_leg[i]`。
+- 必须按 **`MotorStatus.name`（CAN ID）→ `T_leg[i]`** 的固定表重排；完整表见 **`plan.md` §1.2.1** 与 **`configs/leg_index_mapping.yaml`**（`can_id_to_t_leg`、`deploy_j_to_t_leg_i`），与代码 **`tienkung_thermal/bags/mapping.py`** 中 `CAN_TO_T_LEG` / `CAN_TO_DEPLOY_J` 一致。
+- 消息字段定义以本机 **`ros2ws`** 为准（例如 `Tienkung/ros2ws/...` 或与录包环境一致的备份如 **`robot_control_backup_.../ros2ws/install/bodyctrl_msgs/...`**）；**`MotorName.msg` / `MotorStatus.msg` 与上述映射同时满足时**，样例 bag 与文档对齐。
+- `ct_scale[j]`（`j` 为 Deploy 腿中间向量下标 `0…11`，与 CAN `51–56,61–66` 一一对应）来自 `ct_scale_profiles.yaml` 或录包同期机载快照；须先按 **`CAN_TO_DEPLOY_J`** 取 `j`，乘后再经 **`CAN_TO_T_LEG`** 置换到 Ultra 下标 `i`。
 
 ### 2.2 核心数据流
 
@@ -113,7 +114,7 @@ flowchart LR
 | `q` | `one.pos` | 关节位置（rad） |
 | `dq` | `one.speed` | 关节角速度（rad/s） |
 | `current` | `one.current` | 电机电流（A），原始值 |
-| `tau_est` | `current * ct_scale[j]` | 估计力矩；`ct_scale` 来自 `ct_scale_profiles.yaml` 或录包同期机载快照，需按 §1.2.1 映射 |
+| `tau_est` | `current * ct_scale[j]` | 估计力矩；`ct_scale` 来自 `ct_scale_profiles.yaml` 或录包同期机载快照；**CAN→`T_leg[i]` 与 `j→i` 置换**见 **`plan.md` §1.2.1** 与 **`configs/leg_index_mapping.yaml`**（**非**本文 §1.2.1） |
 | `T` | `one.temperature` | 温度标量，单位 `°C`（**监督标签**） |
 | `V` | `one.voltage` | 电机端电压（V），约 `61–62 V`；反映负载与供电状态 |
 | `error` | `one.error` | 电机故障码（`uint32`）；**仅用于数据质量过滤**，`error ≠ 0` 整帧丢弃，不作为 LSTM 输入 |
@@ -173,7 +174,7 @@ C \frac{dT}{dt} = \alpha \tau_{est}^2 + \beta \lvert dq \rvert + \gamma \lvert d
 
 | 特征名 | 定义 | 维度 | 备注 |
 |:-------|:-----|:----:|:-----|
-| `tau_est` | `one.current * ct_scale[j]` | 1 | 估计力矩；依赖外部 `ct_scale`（`plan.md` §2.1.2.1） |
+| `tau_est` | `one.current * ct_scale[j]` | 1 | 估计力矩；`ct_scale` 与下标 `j` 见 `plan.md` §2.1.2 / §2.1.2.1；**CAN→Ultra 映射**见 **`plan.md` §1.2.1** |
 | `tau_sq` | `tau_est ** 2` | 1 | 焦耳热代理 |
 | `dq_abs` | `abs(dq)` | 1 | 机械损耗代理（`plan.md` §2.1.2.2） |
 | `ddq_abs` | `abs(diff(dq) / dt)` | 1 | 仅可由 `speed` 在 `500 Hz` 网格上数值差分得到 |

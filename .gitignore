@@ -3,5 +3,8 @@ __pycache__/
 .pytest_cache/
 .ruff_cache/
 
+# 训练权重（体积大，勿提交）
+checkpoints/
+
 # 本地 bag 与导出样本（体积大，勿提交）
 /data/

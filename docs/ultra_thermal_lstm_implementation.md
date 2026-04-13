@@ -141,6 +141,7 @@ horizon_steps: [10, 20, 40, 60, 100, 140, 200, 240, 300]
 ## 7. 依赖与开发环境
 
 - **运行时**: `torch` 见 `pyproject.toml` 的 `optional-dependencies.train`（`pip install -e ".[train]"`）。
+- **训练 CLI 与 YAML 字段说明**（命令、参数、`train.py` 实际读取的配置键）：见 **`docs/training_ultra_lstm.md`**。
 - **测试**: 建议在 `optional-dependencies.dev` 中已含 `ruff`；若使用 `pytest`，在 `dev` 中增加 `pytest` 或在 README 中说明一次性安装命令。
 
 ---

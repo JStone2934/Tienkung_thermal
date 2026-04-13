@@ -1,0 +1,32 @@
+# =============================================================================
+# Tienkung_thermal — 依赖说明
+# 安装：pip install -r requirements.txt
+# 或仅训练：pip install -e ".[train]"
+# =============================================================================
+
+# --- 核心（无 PyTorch 也可跑 bags 配置解析等）---
+numpy>=1.23
+pyyaml>=6.0
+
+# --- 训练 / 模型 / HDF5 数据集 ---
+torch>=2.0
+h5py>=3.8
+
+# --- rosbag2 解码与导出 ---
+rosbags>=0.9
+
+# --- 开发 / 测试 ---
+ruff>=0.1.0
+pytest>=7.0
+
+# --- 与 ROS2 环境共存时 pytest 的补丁依赖 ---
+# 若系统已 source /opt/ros/humble，pytest 可能自动加载 launch_testing 插件，
+# 该链依赖 lark；未安装时会报 ModuleNotFoundError: No module named 'lark'
+lark>=1.1.0
+
+# --- 可选：ONNX 导出 / 部署（代码中尚未强制 import，需要时再装）---
+# onnx>=1.14
+# onnxscript>=0.1.0
+
+# --- 可选：TensorRT Python 绑定（机载部署，需与 CUDA/TRT 版本匹配）---
+# tensorrt
