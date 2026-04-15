@@ -1,18 +1,16 @@
-# Ultra 腿部热动力学 LSTM 配置（方案 A）
+# Ultra 腿部热动力学 LSTM 配置（全关节联合建模）
 #
 # 权威来源：docs/thermal_lstm_modeling.md、docs/plan.md
 # 实施计划：docs/ultra_thermal_lstm_implementation.md §5
 #
-# 本文件为 LSTM 专用配置；历史 MLP 约定保留在 thermal_predictor.yaml，
-# 两套配置分文件管理，禁止混用（见 ultra_thermal_lstm_implementation.md §2）。
+# 全关节联合输入/联合预测：12 关节 × 3 特征 (q, dq, T) = 36 维输入
+# 输出 (B, 12, H)：同时预测全部 12 关节的多视距温度
 
 # ── 模型架构 ──────────────────────────────────────────────
 model:
   class: ultra_thermal_lstm
-  # use_derived=true  (full):     D=9  → q, dq, current, tau_est, T, V, tau_sq, dq_abs, ddq_abs
-  # use_derived=false (raw-only): D=5  → q, dq, current, T, V
-  # 可选 +邻域(+2) +IMU(+9)；完整组合见 thermal_lstm_modeling.md §3.3.2
-  input_dim: 9
+  input_dim: 36           # 12 joints × 3 features (q, dq, T)
+  d_per_joint: 3          # q, dq, T
   proj_dim: 32
   hidden_dim: 96
   num_layers: 2
@@ -23,46 +21,32 @@ model:
 
 # ── 序列与时间网格 ────────────────────────────────────────
 sequence:
-  seq_len: 7500          # 5 s @ 500 Hz
+  seq_len: 2500           # 5 s @ 500 Hz
   sample_rate_hz: 500
   dt_s: 0.002             # 步长 2 ms
-  stride: 50              # 滑窗步长（帧），50 = 0.1s@500Hz；stride=1 逐帧但极慢
+  stride: 50              # 滑窗步长（帧），50 = 0.1s@500Hz
 
 # ── 预测 Horizon（步数 @ 500 Hz）────────────────────────
 # 对应时间：0.5s, 1.0s, 2.0s, 3.0s, 5.0s, 7.0s, 10.0s, 12.0s, 15.0s
 horizon_steps: [250, 500, 1000, 1500, 2500, 3500, 5000, 6000, 7500]
 
-# ── 特征列表（与 plan.md §2.1.2 白名单对齐）──────────────
+# ── 特征列表 ────────────────────────────────────────────
+# 全关节联合建模：每关节仅使用 q, dq, T 三个原始量
+# 12 关节按 T_leg[0..11] 顺序拼接，joint-major order
 features:
-  # 原始量（Raw）：直接来自 MotorStatus 字段，D_raw = 5
-  raw:
+  per_joint:
     - q           # one.pos (rad)
     - dq          # one.speed (rad/s)
-    - current     # one.current (A)，原始值
-    - temperature # one.temperature (°C)
-    - voltage     # one.voltage (V)
-  # 派生量（Derived）：由原始量经确定性公式计算，D_derived = 4
-  derived:
-    - tau_est     # current * ct_scale[j]
-    - tau_sq      # tau_est ** 2
-    - dq_abs      # |dq|
-    - ddq_abs     # |diff(dq)/dt| 在 500 Hz 网格上数值差分
-  # false = raw-only (D=5)；true = raw + derived (D=9，默认)
-  # 切换时须同步修改 model.input_dim
-  use_derived: true
-  optional_adjacent_temp: false   # 启用后 D += 2（T_prev_same_side, T_next_same_side）
-  optional_imu: false             # 启用后 D += 9（euler 3 + angular_velocity 3 + linear_acceleration 3）
+    - temperature # one.temperature (°C)，同时作为输入特征和监督标签
 
 # ── 数据质量 ──────────────────────────────────────────────
 data_quality:
   error_filter: true              # error ≠ 0 整帧丢弃
-  temperature_ema_alpha: null     # 设为 0.05 可启用温度 EMA 平滑；null 表示不平滑
 
 # ── 归一化 ────────────────────────────────────────────────
 normalization:
   method: z_score
-  stats_path: null                # 填训练集统计文件路径；null 则训练时自动计算并保存
-  log1p_fields: [ddq_abs, tau_sq] # z-score 前先做 log1p 的重尾特征
+  stats_path: null                # 填训练集统计文件路径
 
 # ── 训练 ──────────────────────────────────────────────────
 training:
@@ -103,7 +87,7 @@ acceptance:
 # ── 部署 ──────────────────────────────────────────────────
 deploy:
   onnx_opset: 17
-  input_names: [state_seq, joint_index]
+  input_names: [state_seq]
   output_names: [temp_c_horizon]
   trt_fp16: true
 

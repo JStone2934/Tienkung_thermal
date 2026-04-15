@@ -8,8 +8,7 @@
 
 - **Python**：建议 `>=3.10`，并安装训练依赖（见仓库根目录 `requirements.txt` 或 `pip install -e ".[train]"`）。
 - **工作目录**：在仓库根 **`Tienkung_thermal/`** 下执行命令（下文路径均相对仓库根）。
-- **导入路径**：`train.py` 会把仓库根加入 `sys.path`；若从其它目录调用，仍建议 `cd` 到仓库根再运行。
-- **GPU**：`L=2500` 时在 CPU 上极慢；生产训练请使用 CUDA，并安装带 CUDA 的 PyTorch 发行版。
+- **GPU**：`L=2500` 时在 CPU 上极慢；生产训练请使用 CUDA。
 
 ---
 
@@ -18,7 +17,7 @@
 ### 2.1 基本命令
 
 ```bash
-# 默认：读取 configs/ultra_thermal_lstm.yaml，特征为 full（D=9，含派生量）
+# 全关节联合建模（D=36，12 joints × 3 features）
 python scripts/train.py --config configs/ultra_thermal_lstm.yaml
 ```
 
@@ -27,42 +26,17 @@ python scripts/train.py --config configs/ultra_thermal_lstm.yaml
 | 参数 | 默认值 | 说明 |
 |:-----|:-------|:-----|
 | `--config` | `configs/ultra_thermal_lstm.yaml` | YAML 配置文件路径。 |
-| `--raw-only` | 关闭 | 仅使用原始量特征，**等价于** `features.use_derived: false`，输入维度 **D=5**（不叠加可选特征时）。与配置中 `use_derived: true` 同时存在时，**以 CLI 为准**（即传入 `--raw-only` 则强制 raw-only）。 |
 | `--device` | 见下文 | 训练设备，如 `cuda`、`cuda:0`、`cpu`。若省略，则使用 YAML 中 `training.device`（默认 `cuda`）。 |
 | `--checkpoint-dir` | `checkpoints` | 保存最佳模型的目录；最佳权重文件名为 **`best_ultra_thermal.pt`**。 |
 | `--log-level` | `INFO` | 日志级别，如 `DEBUG`、`INFO`、`WARNING`。 |
-| `--batch-size` | 使用 YAML | 正整数；**覆盖** `training.batch_size`。减小可降低 **GPU 显存**占用。 |
-| `--seq-len` | 使用 YAML | 正整数；**覆盖** `sequence.seq_len`（输入序列长度 **L**）。对显存影响通常比 batch 更大，试验时可适当减小。 |
-| `--num-workers` | `4` | DataLoader 子进程数；主要影响 **CPU 与主机内存**，对 GPU 显存影响很小。 |
-| `--tensorboard-dir DIR` | 关闭 | 将训练曲线写入 **TensorBoard** 事件目录 `DIR`；需已安装 `tensorboard`（见 `requirements.txt` / `pip install -e ".[train]"`）。 |
-| `--tensorboard` | 关闭 | 启用 TensorBoard，等价于日志写入 **`runs/ultra_thermal_<时间戳>/`**（仓库根下）。若同时指定 `--tensorboard-dir`，**以 `--tensorboard-dir` 为准**。 |
-
-**设备解析顺序**：`--device`（若提供）→ 否则 `training.device`。若指定 `cuda` 但当前无 GPU，PyTorch 会在 `trainer.py` 中回退到 **CPU**（仍建议显式使用 GPU 环境训练）。
-
-### 2.2.1 TensorBoard 看板
-
-训练过程中会记录（见 `tienkung_thermal/training/trainer.py`）：
-
-- **`train/loss_step`**：按间隔采样的 batch 损失（全局 step）
-- **`train/loss_epoch`**、**`val/loss`**：每 epoch 训练平均损失与验证集损失（与训练损失同一 `ThermalLoss`）
-- **`val/mae_15s_equal_weight`**、**`val/max_ae`**：15 s 视距等权 MAE（°C）与验证集最大绝对误差
-- **`train/lr`**：当前学习率
-- **`val/mae_15s_per_joint`**：12 关节在 15 s 视距上的 MAE（分组标量）
-
-另开终端执行（将 `DIR` 换为你的日志目录，或使用 `runs/` 以对比多次实验）：
-
-```bash
-tensorboard --logdir runs --port 6006
-```
-
-浏览器打开提示的 URL（通常为 `http://localhost:6006`）即可查看曲线。
+| `--batch-size` | 使用 YAML | 正整数；**覆盖** `training.batch_size`。 |
+| `--seq-len` | 使用 YAML | 正整数；**覆盖** `sequence.seq_len`（输入序列长度 **L**）。 |
+| `--num-workers` | `4` | DataLoader 子进程数。 |
+| `--stride` | 使用 YAML | 滑窗步长（帧数），默认 50（0.1s@500Hz）。 |
 
 ### 2.3 常用示例
 
 ```bash
-# Raw-only 消融（D=5）
-python scripts/train.py --config configs/ultra_thermal_lstm.yaml --raw-only
-
 # 指定第二块 GPU
 python scripts/train.py --config configs/ultra_thermal_lstm.yaml --device cuda:1
 
@@ -70,25 +44,20 @@ python scripts/train.py --config configs/ultra_thermal_lstm.yaml --device cuda:1
 python scripts/train.py --config configs/ultra_thermal_lstm.yaml \
   --checkpoint-dir runs/exp001 --log-level DEBUG
 
-# 显存紧张：减小 batch，必要时再缩短序列长度做试验
-python scripts/train.py --config configs/ultra_thermal_lstm.yaml --raw-only --device cuda \
-  --batch-size 32 --seq-len 2500
-
-# TensorBoard：训练时加 --tensorboard 或 --tensorboard-dir runs/my_exp
-# 另开终端：tensorboard --logdir runs --port 6006
-python scripts/train.py --config configs/ultra_thermal_lstm.yaml --tensorboard
+# 调整 stride 和 batch size
+python scripts/train.py --config configs/ultra_thermal_lstm.yaml \
+  --stride 25 --batch-size 64
 ```
 
 ---
 
 ## 3. YAML 配置与代码实际使用字段
 
-训练脚本**不会**把整份 YAML 自动注入所有子模块；下表列出 **`train.py` / `trainer.py` 实际读取的键**。未列出的键可能供文档、导出或其它脚本使用，**当前训练循环不会读取**。
-
 ### 3.1 `model`（`UltraThermalLSTM` 构造）
 
 | 键 | 默认（代码内） | 说明 |
 |:---|:---------------|:-----|
+| `input_dim` | 36 | 12 joints × 3 features (q, dq, T)。 |
 | `proj_dim` | 32 | 输入线性投影维度。 |
 | `hidden_dim` | 96 | LSTM hidden size。 |
 | `num_layers` | 2 | LSTM 层数。 |
@@ -96,51 +65,24 @@ python scripts/train.py --config configs/ultra_thermal_lstm.yaml --tensorboard
 | `mid_dim` | 64 | 各关节 head 的中间层维度。 |
 | `horizon` | 9 | 多视距预测头数 **H**（与 `horizon_steps` 长度一致）。 |
 | `n_joints` | 12 | 关节数。 |
-| `input_dim` | — | YAML 中有注释用途；**实际 `input_dim` 由特征开关动态计算**（见 §3.4），请勿仅改 YAML 中的 `input_dim` 而不改特征开关。 |
 
 ### 3.2 `sequence`
 
 | 键 | 默认 | 说明 |
 |:---|:-----|:-----|
 | `seq_len` | 2500 | 输入序列长度 **L**（帧数，500 Hz 下 2500≈5 s）。 |
+| `stride` | 50 | 滑窗步长（帧数），50 = 0.1s@500Hz。 |
 
 ### 3.3 顶层 `horizon_steps`
 
 - **类型**：长度为 9 的整数列表（步数，采样率 500 Hz）。
-- **默认**（`train.py` 内若 YAML 未写）：`[250, 500, 1000, 1500, 2500, 3500, 5000, 6000, 7500]`。
-- **与配置关系**：若 `configs/ultra_thermal_lstm.yaml` 中定义了 `horizon_steps`，训练脚本通过 `cfg.get("horizon_steps", …)` 读取；需与 `model.horizon` 长度一致。
+- **默认**：`[250, 500, 1000, 1500, 2500, 3500, 5000, 6000, 7500]`。
 
-### 3.4 `features`（决定输入维度 D）
+### 3.4 `features`
 
-| 键 | 说明 |
-|:---|:-----|
-| `use_derived` | `true`：原始 5 维 + 派生 4 维 → **D=9**（在未启用可选特征时）。`false`：仅原始量 → **D=5**。 |
-| `optional_adjacent_temp` | `true` 时 **+2**（同侧邻关节温度特征）。 |
-| `optional_imu` | `true` 时 **+9**（IMU：euler 3 + gyro 3 + accel 3）。 |
+全关节联合建模下，每关节使用 `q, dq, T` 三个特征，12 关节按 `T_leg[0..11]` 顺序 joint-major 拼接。
 
-**CLI `--raw-only`**：为 `True` 时强制 `use_derived=False`，忽略 YAML 中的 `use_derived`。
-
-维度计算公式（与 `train.py` 一致）：
-
-- 基础：`5 + (4 if use_derived else 0)`
-- 若 `optional_adjacent_temp`：`+2`
-- 若 `optional_imu`：`+9`
-
-### 3.5 `normalization`（归一化）
-
-| 键 | 默认 | 说明 |
-|:---|:-----|:-----|
-| `method` | `z_score` | 归一化方法；目前仅支持 `z_score`。 |
-| `stats_path` | `null` | 预计算统计量 JSON 路径；`null` 时训练脚本自动从训练集计算并保存到 `data/processed/leg_status_500hz/norm_stats.json`。 |
-| `log1p_fields` | `[ddq_abs, tau_sq]` | z-score 前先做 `log1p(abs(x))` 的重尾特征列表。这些特征的极端值可达 1e4 量级，`log1p` 将其压缩到 ~10 量级后再标准化，显著降低 NaN 风险。 |
-
-**归一化流程**（`tienkung_thermal/data/norm.py` + `dataset.py`）：
-
-1. **统计量计算**：遍历训练集 HDF5，对每个特征维度用 Welford 在线算法计算 mean/std。对 `log1p_fields` 中的特征，先做 `log1p(abs(x))` 再统计。
-2. **保存**：统计量保存为 JSON（含 `mean`、`std`、`log1p_fields`、`feature_names`），供评估/推理复用。
-3. **应用**：`Dataset.__getitem__` 中，先对 `log1p_fields` 列做 `log1p(abs(x))`，再做 `(x - mean) / (std + 1e-8)`。
-
-### 3.6 `training` → `TrainConfig`
+### 3.5 `training` → `TrainConfig`
 
 | 键 | 默认 | 说明 |
 |:---|:-----|:-----|
@@ -148,154 +90,60 @@ python scripts/train.py --config configs/ultra_thermal_lstm.yaml --tensorboard
 | `weight_decay` | 1e-4 | AdamW weight decay。 |
 | `scheduler_T_0` | 20 | `CosineAnnealingWarmRestarts` 的 `T_0`。 |
 | `scheduler_T_mult` | 2 | 同上，`T_mult`。 |
-| `batch_size` | 128 | `DataLoader` batch size；可用 CLI `--batch-size` 覆盖。`pin_memory=True` 固定开启。 |
+| `batch_size` | 128 | `DataLoader` batch size；可用 CLI `--batch-size` 覆盖。 |
 | `max_epochs` | 200 | 最大 epoch 数。 |
 | `grad_clip_max_norm` | 1.0 | 梯度裁剪阈值。 |
 | `early_stopping_patience` | 15 | 验证集监控指标连续不提升的容忍 epoch 数。 |
 | `device` | `cuda` | 当未传 `--device` 时使用。 |
 
-### 3.7 `loss` → `ThermalLoss` / `TrainConfig`
+### 3.6 `loss` → `ThermalLoss` / `TrainConfig`
 
 | 键 | 默认 | 说明 |
 |:---|:-----|:-----|
 | `huber_weight` | 0.5 | Huber 项权重。 |
 | `mae_weight` | 0.5 | MAE 项权重。 |
 | `huber_delta` | 1.0 | Huber 的 `delta`。 |
-| `joint_weights` | 12×1.0 | 长度 12 的列表，按 `joint_index` 对样本加权。 |
+| `joint_weights` | 12×1.0 | 长度 12 的列表，按关节加权损失。 |
 
-### 3.8 `data`（数据路径与划分）
+### 3.7 `data`（数据路径与划分）
 
 | 键 | 说明 |
 |:---|:-----|
-| `h5_dir` | 目录下所有 `*.h5` 可作为候选；若提供 `manifest_path` 则优先按 manifest 筛选与划分。 |
-| `manifest_path` | CSV：需含列 **`hdf5_path`**；可选列 **`split`**，取值为 `train` / `val` / `test`（大小写不敏感）。 |
-
-**划分逻辑**（`train.py` 内 `_collect_h5`）：
-
-- 若 manifest **存在**且能读到行：按 `split` 列分配；**无 `split` 或为空** 的行进入「未分配」池，再按 **8:1:1** 随机划分（`random.seed(42)`）。
-- 若 **无 manifest** 或路径无效：对 `h5_dir` 下所有 `*.h5` **随机打乱**（`seed=42`）后按 **8:1:1** 划分为 train / val / test。
-
-测试集路径会被解析，但 **当前 `train.py` 仅构建 train 与 val 的 DataLoader**，不跑 test。
+| `h5_dir` | 目录下所有 `*.h5` 可作为候选。 |
+| `manifest_path` | CSV：需含列 **`hdf5_path`**；可选列 **`split`**。 |
 
 ---
 
 ## 4. 训练循环行为摘要
 
-- **优化器**：AdamW。  
-- **学习率调度**：每个 epoch 结束后 `CosineAnnealingWarmRestarts.step()`。  
-- **损失**：`ThermalLoss`（Huber + MAE，按关节权重对 batch 内样本加权）。  
-- **早停监控指标**：验证集 **`val_mae_15s_equal_weight`**（`trainer.evaluate` 中定义为各关节在 **15 s 视距** 上 MAE 的等权平均；视距对应 `horizon_steps` **最后一个**元素）。  
-- **YAML 中的 `training.early_stopping_monitor` / `acceptance.*`**：当前 **不参与** `trainer.py` 分支逻辑，仅作文档或后续扩展；早停仅以代码中的 `val_mae_15s_equal_weight` 为准。
+- **输入**：`(B, L, 36)` — 12 关节 × 3 特征 (q, dq, T)。
+- **输出**：`(B, 12, H)` — 全部 12 关节的多视距温度预测。
+- **优化器**：AdamW。
+- **学习率调度**：每个 epoch 结束后 `CosineAnnealingWarmRestarts.step()`。
+- **损失**：`ThermalLoss`（Huber + MAE，按关节权重加权）。
+- **早停监控指标**：验证集 **`val_mae_15s_equal_weight`**（12 关节在 15 s 视距上 MAE 的等权平均）。
+- **进度日志**：每 5% batch 打印一次进度。
 
 ---
 
 ## 5. 输出产物
 
-- **路径**：`{checkpoint_dir}/best_ultra_thermal.pt`（默认 `checkpoints/best_ultra_thermal.pt`）。  
-- **内容**：`epoch`、`model_state_dict`、`optimizer_state_dict`、`val_mae_15s`（保存时的门控验证 MAE）。
+- **路径**：`{checkpoint_dir}/best_ultra_thermal.pt`（默认 `checkpoints/best_ultra_thermal.pt`）。
+- **内容**：`epoch`、`model_state_dict`、`optimizer_state_dict`、`val_mae_15s`。
 
 ---
 
-## 6. 相关测试命令（非训练，仅供开发）
+## 6. 相关测试命令
 
 ```bash
-# 建议在仓库根执行；需已安装 dev 依赖（含 pytest）
 PYTHONPATH=. pytest tests/test_thermal_lstm.py -q
 ```
 
-若系统同时加载了 ROS2 的 pytest 插件导致冲突，可尝试：
-
-```bash
-PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 PYTHONPATH=. pytest tests/test_thermal_lstm.py -q
-```
-
 ---
 
-## 7. 评估脚本：`scripts/evaluate.py`
+## 7. 另见
 
-在 test 或 val 集上对已训练模型做完整评估，输出 Gate 指标、各关节各 horizon 的 MAE 矩阵。
-
-### 7.1 命令行参数
-
-| 参数 | 默认值 | 说明 |
-|:-----|:-------|:-----|
-| `--checkpoint` | **必填** | checkpoint `.pt` 路径。 |
-| `--config` | `configs/ultra_thermal_lstm.yaml` | YAML 配置文件。 |
-| `--split` | `test` | 评估哪个划分：`test` 或 `val`。 |
-| `--raw-only` | 关闭 | 仅使用原始量特征（D=5）。 |
-| `--device` | YAML `training.device` | 推理设备。 |
-| `--batch-size` | YAML `training.batch_size` | 评估 batch size。 |
-| `--num-workers` | `4` | DataLoader 子进程数。 |
-| `--output` | 无 | 结果 JSON 输出路径；不指定则仅打印到终端。 |
-
-### 7.2 示例
-
-```bash
-# 在 test 集上评估
-python scripts/evaluate.py --checkpoint checkpoints/best_ultra_thermal.pt
-
-# 在 val 集上评估，保存 JSON
-python scripts/evaluate.py --checkpoint checkpoints/best_ultra_thermal.pt --split val --output eval_results.json
-
-# raw-only 模型
-python scripts/evaluate.py --checkpoint checkpoints/best_ultra_thermal.pt --raw-only
-```
-
-### 7.3 输出内容
-
-- **Gate 指标**：MAE@15s equal-weight + PASS/FAIL（阈值来自 `acceptance.gate_threshold_celsius`）
-- **各 Horizon 全局 MAE**
-- **各关节 MAE@15s**
-- **关节 × Horizon MAE 矩阵**
-- **最大绝对误差**
-
----
-
-## 8. 推理脚本：`scripts/inference.py`
-
-对单个 HDF5 session 做推理，支持单窗口和滑窗两种模式。
-
-### 8.1 命令行参数
-
-| 参数 | 默认值 | 说明 |
-|:-----|:-------|:-----|
-| `--checkpoint` | **必填** | checkpoint `.pt` 路径。 |
-| `--config` | `configs/ultra_thermal_lstm.yaml` | YAML 配置文件。 |
-| `--h5` | **必填** | 单个 HDF5 session 路径。 |
-| `--joint` | **必填** | 关节编号 0–11。 |
-| `--start-frame` | 无 | 单窗口模式：起始帧号。 |
-| `--sliding` | 关闭 | 滑窗模式：沿整个 session 输出预测。 |
-| `--stride` | YAML `sequence.stride` | 滑窗步长（帧数）。 |
-| `--raw-only` | 关闭 | 仅使用原始量特征。 |
-| `--device` | YAML `training.device` | 推理设备。 |
-| `--output` | 无 | CSV 输出路径（滑窗模式）。 |
-
-### 8.2 示例
-
-```bash
-# 单窗口推理：从第 10000 帧开始，预测 joint 3
-python scripts/inference.py \
-    --checkpoint checkpoints/best_ultra_thermal.pt \
-    --h5 data/processed/leg_status_500hz/rosbag2_2026_04_07-10_50_21.h5 \
-    --joint 3 --start-frame 10000
-
-# 滑窗推理：输出整条 session 的预测 CSV
-python scripts/inference.py \
-    --checkpoint checkpoints/best_ultra_thermal.pt \
-    --h5 data/processed/leg_status_500hz/rosbag2_2026_04_07-10_50_21.h5 \
-    --joint 3 --sliding --output pred_j3.csv
-```
-
-### 8.3 输出格式
-
-- **单窗口**：终端打印各 horizon 的预测值、实际值、误差。
-- **滑窗 CSV**：列为 `time_s, actual_temp_now, pred_0.5s, pred_1.0s, ..., pred_15.0s`。
-
----
-
-## 9. 另见
-
-- `configs/ultra_thermal_lstm.yaml` — 完整默认超参与特征开关。  
-- `docs/thermal_lstm_modeling.md` — 特征定义、horizon 与验收口径。  
-- `docs/ultra_thermal_lstm_implementation.md` — 实现计划与模块边界。  
+- `configs/ultra_thermal_lstm.yaml` — 完整默认超参。
+- `docs/thermal_lstm_modeling.md` — 特征定义、horizon 与验收口径。
+- `docs/ultra_thermal_lstm_implementation.md` — 实现计划与模块边界。
 - `docs/dataset_leg_status_h5.md` — HDF5 字段与样本构造前提。

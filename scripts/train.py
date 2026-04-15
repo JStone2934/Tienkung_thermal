@@ -1,34 +1,28 @@
 #!/usr/bin/env python3
-"""Ultra 腿部热 LSTM 训练入口。
+"""Ultra 腿部热 LSTM 训练入口（全关节联合建模）。
 
 完整参数、YAML 字段与数据划分说明见 docs/training_ultra_lstm.md。
 
 用法::
 
-    # 默认 full 模式 (D=9)
     python scripts/train.py --config configs/ultra_thermal_lstm.yaml
-
-    # raw-only 模式 (D=5)
-    python scripts/train.py --config configs/ultra_thermal_lstm.yaml --raw-only
 
     # 指定 GPU
     python scripts/train.py --config configs/ultra_thermal_lstm.yaml --device cuda:1
 
-    # TensorBoard（另开终端: tensorboard --logdir runs）
-    python scripts/train.py --config configs/ultra_thermal_lstm.yaml --tensorboard
+    # 调整 stride 和 batch size
+    python scripts/train.py --config configs/ultra_thermal_lstm.yaml --stride 25 --batch-size 64
 """
 
 from __future__ import annotations
 
 import argparse
-import datetime
 import logging
 import sys
 from pathlib import Path
 
 import yaml
 
-# 确保仓库根可导入
 _REPO = Path(__file__).resolve().parent.parent
 if str(_REPO) not in sys.path:
     sys.path.insert(0, str(_REPO))
@@ -91,51 +85,30 @@ def _collect_h5(h5_dir: str, manifest_path: str | None) -> tuple[list[str], list
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Train UltraThermalLSTM")
+    parser = argparse.ArgumentParser(description="Train UltraThermalLSTM (joint-coupled)")
     parser.add_argument("--config", default="configs/ultra_thermal_lstm.yaml")
-    parser.add_argument("--raw-only", action="store_true", help="仅使用原始量 (D=5)")
     parser.add_argument("--device", default=None)
     parser.add_argument("--checkpoint-dir", default="checkpoints")
     parser.add_argument("--log-level", default="INFO")
     parser.add_argument(
-        "--batch-size",
-        type=int,
-        default=None,
-        metavar="N",
-        help="覆盖 YAML training.batch_size；减小可降低显存占用",
+        "--batch-size", type=int, default=None, metavar="N",
+        help="覆盖 YAML training.batch_size",
     )
     parser.add_argument(
-        "--seq-len",
-        type=int,
-        default=None,
-        metavar="L",
-        help="覆盖 YAML sequence.seq_len；减小可显著降低显存（输入序列变短）",
+        "--seq-len", type=int, default=None, metavar="L",
+        help="覆盖 YAML sequence.seq_len",
     )
     parser.add_argument(
-        "--num-workers",
-        type=int,
-        default=None,
-        metavar="W",
-        help="DataLoader 进程数，默认 4；主要影响 CPU/内存，非 GPU 显存",
+        "--num-workers", type=int, default=None, metavar="W",
+        help="DataLoader 进程数，默认 4",
     )
     parser.add_argument(
-        "--stride",
-        type=int,
-        default=None,
-        metavar="S",
-        help="滑窗步长（帧数），默认 50（0.1s@500Hz）；stride=1 为逐帧，样本最多但极慢",
+        "--stride", type=int, default=None, metavar="S",
+        help="滑窗步长（帧数），默认 50（0.1s@500Hz）",
     )
     parser.add_argument(
-        "--tensorboard-dir",
-        type=str,
-        default=None,
-        metavar="DIR",
-        help="TensorBoard 事件文件目录；设置后记录 loss / MAE / lr 等（需 pip install tensorboard）",
-    )
-    parser.add_argument(
-        "--tensorboard",
-        action="store_true",
-        help="启用 TensorBoard，日志写入 仓库根 runs/ultra_thermal_<时间戳>/（与 --tensorboard-dir 二选一优先使用后者）",
+        "--tensorboard-dir", default="runs", metavar="DIR",
+        help="TensorBoard 日志目录，默认 runs；设为 none 可禁用",
     )
     args = parser.parse_args()
 
@@ -148,46 +121,19 @@ def main() -> None:
     cfg = _load_config(args.config)
     model_cfg = cfg["model"]
     seq_cfg = cfg["sequence"]
-    feat_cfg = cfg["features"]
     train_cfg = cfg["training"]
     loss_cfg = cfg["loss"]
     data_cfg = cfg["data"]
 
-    use_derived = not args.raw_only and feat_cfg.get("use_derived", True)
-    use_adj = feat_cfg.get("optional_adjacent_temp", False)
-    use_imu = feat_cfg.get("optional_imu", False)
-
-    # 动态计算 input_dim
-    d = 5  # raw
-    if use_derived:
-        d += 4
-    if use_adj:
-        d += 2
-    if use_imu:
-        d += 9
-    log.info("feature mode: use_derived=%s use_adj=%s use_imu=%s → D=%d", use_derived, use_adj, use_imu, d)
-
-    tb_dir = args.tensorboard_dir
-    if tb_dir is None and args.tensorboard:
-        ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        tb_dir = str(_REPO / "runs" / f"ultra_thermal_{ts}")
-    elif tb_dir is not None:
-        tb_dir = str(Path(tb_dir).expanduser().resolve())
-    else:
-        tb_dir = None
-
     import torch
     from torch.utils.data import DataLoader
 
-    from tienkung_thermal.data.dataset import UltraThermalDataset
-    from tienkung_thermal.data.norm import (
-        compute_norm_stats,
-        load_norm_stats,
-        save_norm_stats,
-        stats_to_tensors,
-    )
+    from tienkung_thermal.data.dataset import UltraThermalDataset, N_JOINTS, D_PER_JOINT
     from tienkung_thermal.models.thermal_lstm import UltraThermalLSTM
     from tienkung_thermal.training.trainer import TrainConfig, train
+
+    input_dim = model_cfg.get("input_dim", N_JOINTS * D_PER_JOINT)
+    log.info("joint-coupled mode: n_joints=%d  d_per_joint=%d → D=%d", N_JOINTS, D_PER_JOINT, input_dim)
 
     train_h5, val_h5, test_h5 = _collect_h5(
         data_cfg.get("h5_dir", "data/processed/leg_status_500hz"),
@@ -198,43 +144,10 @@ def main() -> None:
     horizon_steps = cfg.get("horizon_steps", [250, 500, 1000, 1500, 2500, 3500, 5000, 6000, 7500])
     seq_len = args.seq_len if args.seq_len is not None else seq_cfg.get("seq_len", 2500)
     stride = args.stride if args.stride is not None else seq_cfg.get("stride", 50)
-
-    # ── 归一化统计量 ──────────────────────────────────────
-    norm_cfg = cfg.get("normalization", {})
-    norm_method = norm_cfg.get("method", "z_score")
-    stats_path = norm_cfg.get("stats_path")
-    log1p_fields = tuple(norm_cfg.get("log1p_fields", ["ddq_abs", "tau_sq"]))
-
-    norm_stats_tensors = None
-    if norm_method == "z_score":
-        if stats_path and Path(stats_path).exists():
-            log.info("loading existing norm stats from %s", stats_path)
-            raw_stats = load_norm_stats(stats_path)
-        else:
-            log.info("computing norm stats from %d train sessions (log1p_fields=%s) ...", len(train_h5), log1p_fields)
-            raw_stats = compute_norm_stats(
-                train_h5,
-                use_derived=use_derived,
-                use_adjacent_temp=use_adj,
-                use_imu=use_imu,
-                log1p_fields=log1p_fields,
-            )
-            default_stats_path = Path(data_cfg.get("h5_dir", "data/processed/leg_status_500hz")) / "norm_stats.json"
-            save_norm_stats(raw_stats, default_stats_path)
-            stats_path = str(default_stats_path)
-        norm_stats_tensors = stats_to_tensors(raw_stats)
-    else:
-        log.info("normalization method=%s — skipping z-score", norm_method)
-
     ds_kwargs = dict(
         seq_len=seq_len,
         horizon_steps=horizon_steps,
-        use_derived=use_derived,
-        use_adjacent_temp=use_adj,
-        use_imu=use_imu,
         stride=stride,
-        norm_stats=norm_stats_tensors,
-        log1p_fields=log1p_fields,
     )
 
     train_ds = UltraThermalDataset(train_h5, **ds_kwargs)
@@ -244,9 +157,6 @@ def main() -> None:
     if len(train_ds) == 0:
         log.error("train dataset is empty — check h5 files and seq_len/horizon")
         sys.exit(1)
-
-    if tb_dir:
-        log.info("TensorBoard log dir: %s", tb_dir)
 
     batch_size = (
         args.batch_size
@@ -271,7 +181,7 @@ def main() -> None:
     log.info("seq_len=%d  batch_size=%d  num_workers=%d  stride=%d", seq_len, batch_size, num_workers, stride)
 
     model = UltraThermalLSTM(
-        input_dim=d,
+        input_dim=input_dim,
         proj_dim=model_cfg.get("proj_dim", 32),
         hidden_dim=model_cfg.get("hidden_dim", 96),
         num_layers=model_cfg.get("num_layers", 2),
@@ -281,10 +191,9 @@ def main() -> None:
         n_joints=model_cfg.get("n_joints", 12),
     )
     n_params = sum(p.numel() for p in model.parameters())
-    log.info("model: UltraThermalLSTM  params=%d  input_dim=%d", n_params, d)
+    log.info("model: UltraThermalLSTM  params=%d  input_dim=%d", n_params, input_dim)
 
     device = args.device or train_cfg.get("device", "cuda")
-
     tcfg = TrainConfig(
         lr=train_cfg.get("lr", 1e-3),
         weight_decay=train_cfg.get("weight_decay", 1e-4),
@@ -300,7 +209,7 @@ def main() -> None:
         huber_delta=loss_cfg.get("huber_delta", 1.0),
         joint_weights=loss_cfg.get("joint_weights", [1.0] * 12),
         checkpoint_dir=args.checkpoint_dir,
-        tensorboard_dir=tb_dir,
+        tensorboard_dir=args.tensorboard_dir if args.tensorboard_dir.lower() != "none" else None,
     )
 
     best_ckpt = train(model, train_loader, val_loader, tcfg)

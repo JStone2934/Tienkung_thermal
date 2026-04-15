@@ -1,13 +1,12 @@
-"""UltraThermalLSTM — 因果 LSTM 热预测模型。
+"""UltraThermalLSTM — 全关节联合因果 LSTM 热预测模型。
 
 架构与超参数约定见 docs/thermal_lstm_modeling.md §4；
 配置文件见 configs/ultra_thermal_lstm.yaml。
 
 输入:
-    state_seq  (B, L, D)   — 历史特征序列
-    joint_index (B,)       — T_leg[0..11] 关节编号
+    state_seq  (B, L, D)   — 12 关节 × 3 特征 (q, dq, T) 拼接的历史序列，D=36
 输出:
-    (B, H)                 — 未来多视距温度预测 (°C)
+    (B, 12, H)             — 全部 12 关节的未来多视距温度预测 (°C)
 """
 
 from __future__ import annotations
@@ -17,11 +16,11 @@ import torch.nn as nn
 
 
 class UltraThermalLSTM(nn.Module):
-    """共享骨干 + 12 关节独立输出头的因果 LSTM。"""
+    """共享骨干 + 12 关节独立输出头的因果 LSTM（全关节联合输入/联合预测）。"""
 
     def __init__(
         self,
-        input_dim: int = 9,
+        input_dim: int = 36,
         proj_dim: int = 32,
         hidden_dim: int = 96,
         num_layers: int = 2,
@@ -57,16 +56,15 @@ class UltraThermalLSTM(nn.Module):
             ]
         )
 
-    def forward(self, x: torch.Tensor, joint_index: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
         Parameters
         ----------
-        x : (B, L, D)
-        joint_index : (B,) long, 0..n_joints-1
+        x : (B, L, D)  — D = n_joints * d_per_joint = 36
 
         Returns
         -------
-        (B, H) — 多视距未来温度预测
+        (B, n_joints, H) — 全部 12 关节的多视距未来温度预测
         """
         x = self.input_proj(x)
         lstm_out, _ = self.lstm(x)
@@ -74,5 +72,4 @@ class UltraThermalLSTM(nn.Module):
         all_preds = torch.stack(
             [head(h_last) for head in self.heads], dim=1
         )  # (B, n_joints, H)
-        idx = joint_index.view(-1, 1, 1).expand(-1, 1, all_preds.size(-1))
-        return all_preds.gather(dim=1, index=idx).squeeze(1)  # (B, H)
+        return all_preds
